@@ -56,10 +56,18 @@ cargo test -p praxishub-connector-core
 npm run tauri build    # signierter NSIS-Installer (CI: windows-latest)
 ```
 
+## Background-Betrieb
+
+Der Connector ist ein Daemon: System-Tray-Icon (Menü „Öffnen" / „Beenden"),
+Fenster-Schließen minimiert in den Tray (KIM-Watcher läuft weiter), Login-Autostart
+startet ihn unsichtbar (`--autostart`). Beenden nur über das Tray-Menü.
+
 ## Offene nächste Schritte
 
-- Backend: Routen `/api/v1/connector/{ping,heartbeat,hkp,updates}` in der Praxishub-API.
-- Tray-Icon + „in den Hintergrund schließen" (echter Background-Betrieb statt Fenster).
+- Backend-Routen `/api/v1/connector/{ping,heartbeat,hkp}` sind in der Praxishub-API
+  gebaut + auf der Dev-Instanz verifiziert (Prod-Deploy ausstehend). `updates`
+  (Self-Update-Feed) noch offen.
 - Updater scharf schalten (`createUpdaterArtifacts` + Minisign-Key in `tauri.conf.json`).
 - Secrets per Windows-DPAPI statt Klartext-JSON (`core/src/config.rs`).
 - VDDS-media: inbound media-Aufruf des PVS behandeln (Connector als Media-Handler).
+- First-Run-Onboarding (Tenant/API-Key per Token aus dem Dashboard).

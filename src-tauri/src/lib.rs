@@ -4,8 +4,10 @@
 pub mod commands;
 pub mod elevate;
 pub mod state;
+pub mod tray;
 
 use state::AppState;
+use tauri::Manager;
 use tauri_plugin_autostart::MacosLauncher;
 
 fn init_tracing() {
@@ -34,6 +36,25 @@ pub fn run() {
             {
                 use tauri_plugin_autostart::ManagerExt;
                 let _ = app.autolaunch().enable();
+            }
+
+            // System-Tray (Hintergrundbetrieb).
+            tray::build(app.handle())?;
+
+            // Fenster-Schließen = in den Tray minimieren statt beenden — der
+            // KIM-Watcher läuft weiter. Beenden nur über das Tray-Menü.
+            if let Some(window) = app.get_webview_window("main") {
+                let win = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = win.hide();
+                    }
+                });
+                // Per Login-Autostart unsichtbar starten (nur Tray).
+                if std::env::args().any(|a| a == "--autostart") {
+                    let _ = window.hide();
+                }
             }
 
             // Watcher starten, sobald die App läuft (innerhalb der Tokio-Runtime).
