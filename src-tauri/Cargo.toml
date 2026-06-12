@@ -24,3 +24,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 praxishub-connector-core = { path = "../core" }
+
+# time 0.3.48 bricht unter rustc ≥1.96 (E0119: ein interner `From`-Impl kollidiert
+# mit den Blanket-`From<T>`-Impls in tauri-utils/cookie). 0.3.47 ist die neueste
+# Version ohne den Bug und erfüllt plists `^0.3.47`. Pin entfernen, sobald ein
+# gefixtes time erscheint. (Transitiv genutzt; hier nur als Versions-Pin.)
+time = "=0.3.47"
