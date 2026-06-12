@@ -2566,6 +2566,7 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tracing",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

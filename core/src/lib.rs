@@ -10,6 +10,7 @@
 
 pub mod cloud;
 pub mod config;
+pub mod crypto;
 pub mod error;
 pub mod kim;
 pub mod paths;

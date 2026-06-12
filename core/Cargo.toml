@@ -23,5 +23,9 @@ anyhow = "1"
 directories = "5"
 base64 = "0.22"
 
+[target.'cfg(windows)'.dependencies]
+# DPAPI für Secret-Schutz at-rest (core/src/crypto.rs)
+windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_Foundation"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

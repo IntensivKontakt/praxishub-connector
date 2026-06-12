@@ -1,8 +1,8 @@
 //! Per-Praxis-Konfiguration des Connectors.
 //!
-//! Persistiert als JSON im Per-User-AppData. **TODO (Sicherheit):** `api_key` und
-//! `kim_password` liegen aktuell im Klartext; vor Pilot auf Windows-DPAPI /
-//! Credential Manager umstellen (siehe PRA-15 „Installer & Signing").
+//! Persistiert als JSON im Per-User-AppData. `api_key` und `kim_password` werden
+//! at-rest geschützt (Windows: DPAPI, an den Benutzer gebunden — siehe
+//! [`crate::crypto`]); auf Nicht-Windows-Plattformen Klartext (nur Dev).
 
 use crate::error::Result;
 use crate::paths;
@@ -69,18 +69,29 @@ impl Default for ConnectorConfig {
 
 impl ConnectorConfig {
     /// Lädt die Konfiguration; bei fehlender Datei werden Defaults zurückgegeben.
+    /// Geschützte Secrets (DPAPI) werden entschlüsselt zurückgegeben.
     pub fn load() -> Result<Self> {
         let path = paths::config_file()?;
         match std::fs::read(&path) {
-            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+            Ok(bytes) => {
+                let mut cfg: Self = serde_json::from_slice(&bytes)?;
+                cfg.api_key = crate::crypto::unprotect(&cfg.api_key);
+                cfg.kim_password = crate::crypto::unprotect(&cfg.kim_password);
+                Ok(cfg)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(e.into()),
         }
     }
 
+    /// Speichert die Konfiguration; Secrets werden vor dem Schreiben geschützt
+    /// (Windows: DPAPI, sonst Klartext).
     pub fn save(&self) -> Result<()> {
         let path = paths::config_file()?;
-        let json = serde_json::to_vec_pretty(self)?;
+        let mut on_disk = self.clone();
+        on_disk.api_key = crate::crypto::protect(&self.api_key);
+        on_disk.kim_password = crate::crypto::protect(&self.kim_password);
+        let json = serde_json::to_vec_pretty(&on_disk)?;
         std::fs::write(path, json)?;
         Ok(())
     }

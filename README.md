@@ -81,5 +81,4 @@ manuelle Eingabe gegen das bereits live Backend.
 - Dashboard-seitig: „Verbindungscode erzeugen" (base64url-Paket) im Praxishub-Frontend.
 - `updates`-Self-Update-Feed (Backend) + Updater scharf schalten
   (`createUpdaterArtifacts` + Minisign-Key in `tauri.conf.json`).
-- Secrets per Windows-DPAPI statt Klartext-JSON (`core/src/config.rs`).
 - VDDS-media: inbound media-Aufruf des PVS behandeln (Connector als Media-Handler).
