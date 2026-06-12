@@ -72,13 +72,19 @@ Beim ersten Start (unkonfiguriert) zeigt die App einen Wizard:
 Sobald Cloud- und KIM-Zugang gesetzt sind, wechselt die App ins Dashboard.
 
 **Verbindungscode-Format:** `base64url(JSON {"url","tenant","key"})` mit
-`key` = Extension-Schlüssel `wp_ext_…`. Das Praxishub-Dashboard muss diesen Code
-noch ausgeben (Button „Verbindungscode erzeugen"); bis dahin funktioniert die
-manuelle Eingabe gegen das bereits live Backend.
+`key` = Extension-Schlüssel `wp_ext_…`. Das Praxishub-Dashboard gibt den Code aus
+(Praxis-Einstellungen → Praxishub Connector → „Verbindungscode erzeugen").
+
+## Auto-Update
+
+Updater-Artefakte (`latest.json` + `.sig`) werden im Release-Build mit einem
+Minisign-Key signiert (`createUpdaterArtifacts: true`, pubkey in `tauri.conf.json`,
+privater Key als GitHub-Secret `TAURI_SIGNING_PRIVATE_KEY` — Backup in
+`~/Keystores/praxishub/`). Der Update-Feed liegt unter
+`/api/v1/connector/updates/{target}/{arch}/{current_version}`. Signierte Artefakte
+entstehen beim Tag-Build (`v*`) via `build-sign.yml`.
 
 ## Offene nächste Schritte
 
-- Dashboard-seitig: „Verbindungscode erzeugen" (base64url-Paket) im Praxishub-Frontend.
-- `updates`-Self-Update-Feed (Backend) + Updater scharf schalten
-  (`createUpdaterArtifacts` + Minisign-Key in `tauri.conf.json`).
+- `updates`-Feed-Endpoint serverseitig befüllen (latest-Manifest ausliefern).
 - VDDS-media: inbound media-Aufruf des PVS behandeln (Connector als Media-Handler).

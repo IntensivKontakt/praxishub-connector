@@ -26,6 +26,10 @@ jobs:
           node-version: 20
       - uses: dtolnay/rust-toolchain@stable
       - name: Dependencies & Tauri-Bundle bauen
+        env:
+          # Signiert die Updater-Artefakte (latest.json + .sig) mit dem Minisign-Key.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: |
           npm ci
           npm run tauri build
