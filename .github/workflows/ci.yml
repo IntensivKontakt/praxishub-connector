@@ -1,0 +1,45 @@
+name: CI
+
+# Schnelle Verifikation bei jedem Push/PR (ohne Signing). Der Logik-Kern wird
+# unit-getestet (Linux, schnell); der volle Tauri-App-Build wird auf echtem
+# windows-latest + stable durchkompiliert — das ist die maßgebliche Prüfung der
+# App-Schicht (lokal auf macOS nicht möglich).
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+
+permissions:
+  contents: read
+
+jobs:
+  core-and-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Frontend bauen (tsc + vite)
+        run: |
+          npm ci
+          npm run build
+      - name: Core-Tests
+        run: cargo test -p praxishub-connector-core
+
+  app-compile:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Frontend-Assets (für generate_context!)
+        run: |
+          npm ci
+          npm run build
+      - name: Gesamten Workspace typprüfen
+        run: cargo check --workspace

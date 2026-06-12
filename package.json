@@ -1,0 +1,24 @@
+{
+  "name": "praxishub-connector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "On-Prem-Brücke zwischen Praxishub-Cloud und Praxis-PVS (VDDS-media + KIM/EBZ).",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/plugin-autostart": "^2.2.0",
+    "@tauri-apps/plugin-dialog": "^2.2.0",
+    "@tauri-apps/plugin-updater": "^2.3.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.3"
+  }
+}

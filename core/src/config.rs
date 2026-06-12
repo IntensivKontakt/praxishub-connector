@@ -1,0 +1,100 @@
+//! Per-Praxis-Konfiguration des Connectors.
+//!
+//! Persistiert als JSON im Per-User-AppData. **TODO (Sicherheit):** `api_key` und
+//! `kim_password` liegen aktuell im Klartext; vor Pilot auf Windows-DPAPI /
+//! Credential Manager umstellen (siehe PRA-15 „Installer & Signing").
+
+use crate::error::Result;
+use crate::paths;
+use serde::{Deserialize, Serialize};
+
+fn default_base_url() -> String {
+    "https://api.praxishub.ai".to_string()
+}
+fn default_kim_host() -> String {
+    "127.0.0.1".to_string()
+}
+fn default_kim_port() -> u16 {
+    995
+}
+fn default_poll() -> u64 {
+    60
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorConfig {
+    #[serde(default = "default_base_url")]
+    pub praxishub_base_url: String,
+    #[serde(default)]
+    pub tenant_id: String,
+    #[serde(default)]
+    pub api_key: String,
+
+    // KIM-Clientmodul (lokaler POP3-Proxy, liefert bereits entschlüsselt).
+    #[serde(default = "default_kim_host")]
+    pub kim_host: String,
+    #[serde(default = "default_kim_port")]
+    pub kim_port: u16,
+    #[serde(default)]
+    pub kim_user: String,
+    #[serde(default)]
+    pub kim_password: String,
+    #[serde(default = "default_poll")]
+    pub kim_poll_seconds: u64,
+
+    /// KIM-Clientmodule am localhost präsentieren oft selbstsignierte Zertifikate.
+    #[serde(default = "default_true")]
+    pub kim_allow_invalid_cert: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for ConnectorConfig {
+    fn default() -> Self {
+        Self {
+            praxishub_base_url: default_base_url(),
+            tenant_id: String::new(),
+            api_key: String::new(),
+            kim_host: default_kim_host(),
+            kim_port: default_kim_port(),
+            kim_user: String::new(),
+            kim_password: String::new(),
+            kim_poll_seconds: default_poll(),
+            kim_allow_invalid_cert: true,
+        }
+    }
+}
+
+impl ConnectorConfig {
+    /// Lädt die Konfiguration; bei fehlender Datei werden Defaults zurückgegeben.
+    pub fn load() -> Result<Self> {
+        let path = paths::config_file()?;
+        match std::fs::read(&path) {
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let path = paths::config_file()?;
+        let json = serde_json::to_vec_pretty(self)?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Hinreichend konfiguriert, um den KIM-Watcher zu starten?
+    pub fn kim_ready(&self) -> bool {
+        !self.kim_host.is_empty()
+            && self.kim_port != 0
+            && !self.kim_user.is_empty()
+            && !self.kim_password.is_empty()
+    }
+
+    /// Hinreichend konfiguriert, um mit der Cloud zu sprechen?
+    pub fn cloud_ready(&self) -> bool {
+        !self.praxishub_base_url.is_empty() && !self.tenant_id.is_empty() && !self.api_key.is_empty()
+    }
+}

@@ -1,0 +1,11 @@
+# Workspace-Wurzel. `core` = portabler, Tauri-freier Logik-Kern (lokal testbar);
+# `src-tauri` = die Desktop-App, die CI über `npm run tauri build` baut.
+[workspace]
+members = ["core", "src-tauri"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+authors = ["IntensivKontakt GmbH"]
