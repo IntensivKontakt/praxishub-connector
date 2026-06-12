@@ -62,12 +62,24 @@ Der Connector ist ein Daemon: System-Tray-Icon (Menü „Öffnen" / „Beenden")
 Fenster-Schließen minimiert in den Tray (KIM-Watcher läuft weiter), Login-Autostart
 startet ihn unsichtbar (`--autostart`). Beenden nur über das Tray-Menü.
 
+## Einrichtung (First-Run)
+
+Beim ersten Start (unkonfiguriert) zeigt die App einen Wizard:
+1. **Praxishub verbinden** — Verbindungscode aus dem Dashboard einfügen (oder
+   URL/Tenant/Key manuell). Test gegen `/api/v1/connector/ping`.
+2. **KIM-Postfach** — Host/Port/Benutzer/Passwort (aus dem KIM-Clientmodul).
+
+Sobald Cloud- und KIM-Zugang gesetzt sind, wechselt die App ins Dashboard.
+
+**Verbindungscode-Format:** `base64url(JSON {"url","tenant","key"})` mit
+`key` = Extension-Schlüssel `wp_ext_…`. Das Praxishub-Dashboard muss diesen Code
+noch ausgeben (Button „Verbindungscode erzeugen"); bis dahin funktioniert die
+manuelle Eingabe gegen das bereits live Backend.
+
 ## Offene nächste Schritte
 
-- Backend-Routen `/api/v1/connector/{ping,heartbeat,hkp}` sind in der Praxishub-API
-  gebaut + auf der Dev-Instanz verifiziert (Prod-Deploy ausstehend). `updates`
-  (Self-Update-Feed) noch offen.
-- Updater scharf schalten (`createUpdaterArtifacts` + Minisign-Key in `tauri.conf.json`).
+- Dashboard-seitig: „Verbindungscode erzeugen" (base64url-Paket) im Praxishub-Frontend.
+- `updates`-Self-Update-Feed (Backend) + Updater scharf schalten
+  (`createUpdaterArtifacts` + Minisign-Key in `tauri.conf.json`).
 - Secrets per Windows-DPAPI statt Klartext-JSON (`core/src/config.rs`).
 - VDDS-media: inbound media-Aufruf des PVS behandeln (Connector als Media-Handler).
-- First-Run-Onboarding (Tenant/API-Key per Token aus dem Dashboard).
