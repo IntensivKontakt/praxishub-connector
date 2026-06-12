@@ -84,7 +84,18 @@ privater Key als GitHub-Secret `TAURI_SIGNING_PRIVATE_KEY` — Backup in
 `/api/v1/connector/updates/{target}/{arch}/{current_version}`. Signierte Artefakte
 entstehen beim Tag-Build (`v*`) via `build-sign.yml`.
 
-## Offene nächste Schritte
+## Am Z1-Pilot zu verifizieren / abschließen
 
-- `updates`-Feed-Endpoint serverseitig befüllen (latest-Manifest ausliefern).
-- VDDS-media: inbound media-Aufruf des PVS behandeln (Connector als Media-Handler).
+Diese Punkte brauchen den echten PVS bzw. ein Release und sind bewusst nicht
+„blind" fertig gebaut:
+
+- **VDDS-media** — Modul-Registrierung + Patient-Parsing beim PVS-Aufruf stehen
+  (Connector reagiert auf `<exe> <VDDS_MMO.INI>`); das media-**Antwortprotokoll**
+  (welche Felder der PVS zurückerwartet, PDF-Import-Trigger, INI-Schema) ist am Z1
+  zu verifizieren — siehe `vdds/media.rs::handle_invocation` und `vdds/ini.rs`.
+- **Auto-Update aktivieren** — bei einem Release `CONNECTOR_UPDATE_MANIFEST` (Backend-Env)
+  mit `version`/`url`/`signature` füllen; signierte Artefakte via Tag-Build (`v*`).
+- **Code-Signing-Profil** — Azure-Trusted-Signing-Certificate-Profile anlegen,
+  sobald die Identity Validation freigegeben ist (`docs/SIGNING.md`).
+- **.p7s/XML-Parsing + Auto-Einbestellung** — serverseitig (HKP-EBZ-Feature, braucht
+  echtes EBZ-Sample); der Connector liefert die Rohnachricht bereits.

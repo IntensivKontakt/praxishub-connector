@@ -107,9 +107,72 @@ pub fn import_document(pvs_program: &Path, req: &ImportRequest) -> Result<()> {
     }
 }
 
+// ── Inbound: vom PVS als Media-Handler aufgerufen ────────────────────────────
+
+/// Erkennt, ob ein CLI-Argument ein VDDS-media-Aufruf ist: Pfad auf eine
+/// existierende `.ini`-Datei (der PVS ruft unser registriertes Modul so auf).
+pub fn is_media_invocation(arg: &str) -> bool {
+    arg.to_ascii_lowercase().ends_with(".ini") && Path::new(arg).is_file()
+}
+
+/// Liest den `[PATIENT]`-Kontext aus der vom PVS geschriebenen `VDDS_MMO.INI`
+/// (Windows-1252).
+pub fn parse_patient_from_request(ini_path: &Path) -> Result<PatientContext> {
+    let bytes = std::fs::read(ini_path)?;
+    let (text, _, _) = WINDOWS_1252.decode(&bytes);
+    let ini = crate::vdds::ini::Ini::parse(&text);
+    let get = |k: &str| ini.get("PATIENT", k).unwrap_or("").to_string();
+    Ok(PatientContext {
+        patient_id: get("PATID"),
+        last_name: get("NAME"),
+        first_name: get("VORNAME"),
+        birth_date: get("GEBDATUM"),
+    })
+}
+
+/// Einstiegspunkt, wenn der PVS unser Modul via VDDS-media aufruft
+/// (`praxishub-connector.exe <pfad-zur-VDDS_MMO.INI>`). Parst den Patientenkontext.
+///
+/// ⚠️ **Z1-Pilot offen:** der weitere Ablauf — passende Praxishub-Dokumente für
+/// diesen Patienten aus der Cloud holen und dem PVS zum Import zurückgeben — hängt
+/// vom konkreten media-Antwortprotokoll des Z1 ab (Antwort-INI-Felder, Import-Trigger).
+/// Hier wird der Kontext geparst und protokolliert; das Zurückschreiben folgt nach
+/// Verifikation am echten PVS.
+pub fn handle_invocation(ini_path: &Path) -> Result<PatientContext> {
+    let patient = parse_patient_from_request(ini_path)?;
+    tracing::info!(
+        patid = %patient.patient_id,
+        name = %patient.last_name,
+        "VDDS-media: PVS-Aufruf für Patient erhalten"
+    );
+    Ok(patient)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parst_patient_aus_request_ini() {
+        let path = std::env::temp_dir().join("praxishub_test_vdds_mmo_in.ini");
+        std::fs::write(
+            &path,
+            b"[PATIENT]\r\nPATID=4711\r\nNAME=Mustermann\r\nVORNAME=Erika\r\nGEBDATUM=01.01.1980\r\n",
+        )
+        .unwrap();
+        let pc = parse_patient_from_request(&path).unwrap();
+        assert_eq!(pc.patient_id, "4711");
+        assert_eq!(pc.last_name, "Mustermann");
+        assert_eq!(pc.first_name, "Erika");
+        assert_eq!(pc.birth_date, "01.01.1980");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn erkennt_keinen_media_aufruf_bei_flags() {
+        assert!(!is_media_invocation("--autostart"));
+        assert!(!is_media_invocation("/pfad/gibtsnicht.ini"));
+    }
 
     #[test]
     fn mmo_ini_enthaelt_patient_und_dokument() {
