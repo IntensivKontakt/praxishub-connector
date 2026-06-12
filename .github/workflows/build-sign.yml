@@ -1,0 +1,57 @@
+name: Build & Sign (Release)
+
+# Der echte Release-Build des Connectors. Wird erst grün, sobald die Tauri-App
+# gescaffoldet ist (package.json + src-tauri). Triggert auf Versions-Tags (v*)
+# oder manuell. Signiert Installer + App-.exe via Trusted Signing.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Tauri-Build (aktiv, sobald die App existiert) ---
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Dependencies & Tauri-Bundle bauen
+        run: |
+          npm ci
+          npm run tauri build
+
+      # --- Signieren ---
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Installer + App-.exe signieren
+        uses: azure/trusted-signing-action@v0.5.1
+        with:
+          endpoint: ${{ vars.TRUSTED_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.TRUSTED_SIGNING_PROFILE }}
+          files-folder: src-tauri\target\release\bundle
+          files-folder-filter: exe,msi
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: praxishub-connector-signed
+          path: src-tauri/target/release/bundle/**/*.exe

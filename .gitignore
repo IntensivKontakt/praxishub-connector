@@ -1,0 +1,17 @@
+# Rust / Tauri
+/target
+**/target
+
+# Node
+node_modules/
+dist/
+
+# OS / Editor
+.DS_Store
+*.log
+
+# Env / Secrets
+.env
+.env.local
+*.pfx
+*.snk
