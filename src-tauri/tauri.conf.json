@@ -39,17 +39,11 @@
     ],
     "windows": {
       "signCommand": {
-        "cmd": "sign",
+        "cmd": "pwsh",
         "args": [
-          "code",
-          "artifact-signing",
-          "--artifact-signing-endpoint", "https://neu.codesigning.azure.net/",
-          "--artifact-signing-account", "Praxishub",
-          "--artifact-signing-certificate-profile", "praxishub-connector",
-          "--azure-credential-type", "azure-cli",
-          "--timestamp-url", "http://timestamp.acs.microsoft.com",
-          "-v", "information",
-          "%1"
+          "-NoProfile",
+          "-Command",
+          "$o = & sign code artifact-signing --artifact-signing-endpoint https://neu.codesigning.azure.net/ --artifact-signing-account Praxishub --artifact-signing-certificate-profile praxishub-connector --azure-credential-type azure-cli --timestamp-url http://timestamp.acs.microsoft.com -v information \"%1\" 2>&1; $c = $LASTEXITCODE; $o | Tee-Object -FilePath \"$env:RUNNER_TEMP\\sign.log\" -Append; exit $c"
         ]
       },
       "nsis": {
