@@ -1,8 +1,7 @@
 name: Sign-CLI Smoke (OIDC)
 
-# De-Risk: validiert Microsofts `sign`-Dotnet-Tool mit Azure-CLI-Credential (OIDC,
-# KEIN Client-Secret) — der Weg für Tauris signCommand (innere App-.exe). Schnell,
-# damit wir das nicht erst im 14-Min-Release-Build merken. Manuell starten.
+# De-Risk: validiert `sign code artifact-signing` (nicht-obsolet) mit azure-cli
+# credential (OIDC) inkl. Exit-Code — der Weg für Tauris signCommand. Manuell.
 
 on:
   workflow_dispatch: {}
@@ -27,41 +26,35 @@ jobs:
         shell: pwsh
         run: dotnet tool install --global sign --prerelease
 
-      - name: Verfügbare sign-Subcommands (Flag-Discovery)
+      - name: artifact-signing Flags (Discovery)
         shell: pwsh
         continue-on-error: true
-        run: |
-          sign code --help
-          Write-Host "----- trusted-signing -----"
-          sign code trusted-signing --help
+        run: sign code artifact-signing --help
 
-      - name: Azure Login (OIDC, kein Secret)
+      - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Signieren via sign-Tool (azure-cli credential = OIDC)
+      - name: Signieren via artifact-signing (Exit-Code sichtbar)
         shell: pwsh
-        continue-on-error: true
         run: |
-          sign code trusted-signing `
-            --trusted-signing-endpoint "${{ vars.TRUSTED_SIGNING_ENDPOINT }}" `
-            --trusted-signing-account "${{ vars.TRUSTED_SIGNING_ACCOUNT }}" `
-            --trusted-signing-certificate-profile "${{ vars.TRUSTED_SIGNING_PROFILE }}" `
+          sign code artifact-signing `
+            --artifact-signing-endpoint "${{ vars.TRUSTED_SIGNING_ENDPOINT }}" `
+            --artifact-signing-account "${{ vars.TRUSTED_SIGNING_ACCOUNT }}" `
+            --artifact-signing-certificate-profile "${{ vars.TRUSTED_SIGNING_PROFILE }}" `
             --azure-credential-type azure-cli `
             --timestamp-url http://timestamp.acs.microsoft.com `
-            --verbosity information `
-            "out/*.exe"
+            -v information `
+            "out/smoke.exe"
+          Write-Host "SIGN_EXIT=$LASTEXITCODE"
+          if ($LASTEXITCODE -ne 0) { throw "sign exit $LASTEXITCODE" }
 
       - name: Signatur verifizieren
         shell: pwsh
         run: |
-          $bad = 1
-          Get-ChildItem out -Filter *.exe | ForEach-Object {
-            $sig = Get-AuthenticodeSignature $_.FullName
-            Write-Host "$($_.Name): $($sig.Status) — $($sig.SignerCertificate.Subject)"
-            if ($sig.Status -eq 'Valid') { $bad = 0 }
-          }
-          exit $bad
+          $sig = Get-AuthenticodeSignature "out/smoke.exe"
+          Write-Host "smoke.exe: $($sig.Status) — $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') { exit 1 }
