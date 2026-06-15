@@ -77,6 +77,19 @@ jobs:
           }
           exit $bad
 
+      - name: Eingebettete App-.exe im Installer prüfen (entpacken)
+        shell: pwsh
+        run: |
+          # 100%-Beleg: Installer entpacken und die DARIN gepackte App-.exe prüfen
+          # (das ist die exe, die nach der Installation auf dem Rechner liegt).
+          $inst = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
+          7z x "$($inst.FullName)" "-oextracted" -y | Out-Null
+          $exe = Get-ChildItem extracted -Recurse -Filter praxishub-connector.exe | Select-Object -First 1
+          if (-not $exe) { Write-Host "Eingebettete App-.exe nicht gefunden"; exit 1 }
+          $s = Get-AuthenticodeSignature $exe.FullName
+          Write-Host "Eingebettete App-.exe: $($s.Status) - $($s.SignerCertificate.Subject)"
+          if ($s.Status -ne 'Valid') { exit 1 }
+
       - uses: actions/upload-artifact@v4
         with:
           name: praxishub-connector-signed
