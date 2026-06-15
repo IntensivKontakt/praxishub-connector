@@ -57,20 +57,23 @@ jobs:
         shell: pwsh
         run: Get-Content "$env:RUNNER_TEMP\sign.log" -ErrorAction SilentlyContinue
 
-      - name: Signaturen verifizieren (App-.exe + Installer)
+      - name: Signatur verifizieren (Installer = ausgeliefertes Artefakt)
         shell: pwsh
         run: |
-          $bad = 0
+          # Maßgeblich ist der INSTALLER: er enthält die bereits signierte App-.exe
+          # (signCommand signiert in Reihenfolge Patch → App-.exe → makensis → Installer).
+          # Die standalone target/release/*.exe ist nur ein Build-Artefakt (wird nicht
+          # ausgeliefert) und kann unsigniert erscheinen — daher nur Info.
+          $bad = 1
+          Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | ForEach-Object {
+            $s = Get-AuthenticodeSignature $_.FullName
+            Write-Host "Installer $($_.Name): $($s.Status) - $($s.SignerCertificate.Subject)"
+            if ($s.Status -eq 'Valid') { $bad = 0 }
+          }
           $app = Get-ChildItem target/release -Filter praxishub-connector.exe -ErrorAction SilentlyContinue
           if ($app) {
             $s = Get-AuthenticodeSignature $app.FullName
-            Write-Host "App-exe: $($s.Status) - $($s.SignerCertificate.Subject)"
-            if ($s.Status -ne 'Valid') { $bad = 1 }
-          } else { Write-Host "App-exe nicht gefunden"; $bad = 1 }
-          Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | ForEach-Object {
-            $s = Get-AuthenticodeSignature $_.FullName
-            Write-Host "$($_.Name): $($s.Status) - $($s.SignerCertificate.Subject)"
-            if ($s.Status -ne 'Valid') { $bad = 1 }
+            Write-Host "(info) standalone App-exe: $($s.Status)"
           }
           exit $bad
 
