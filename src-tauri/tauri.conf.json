@@ -38,6 +38,10 @@
       "icons/icon.ico"
     ],
     "windows": {
+      "signCommand": {
+        "cmd": "pwsh",
+        "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "sign-wrap.ps1", "%1"]
+      },
       "nsis": {
         "installMode": "currentUser",
         "languages": ["German", "English"]
