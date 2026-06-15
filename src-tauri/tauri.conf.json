@@ -38,6 +38,20 @@
       "icons/icon.ico"
     ],
     "windows": {
+      "signCommand": {
+        "cmd": "sign",
+        "args": [
+          "code",
+          "trusted-signing",
+          "--trusted-signing-endpoint", "https://neu.codesigning.azure.net/",
+          "--trusted-signing-account", "Praxishub",
+          "--trusted-signing-certificate-profile", "praxishub-connector",
+          "--azure-credential-type", "azure-cli",
+          "--timestamp-url", "http://timestamp.acs.microsoft.com",
+          "-v", "information",
+          "%1"
+        ]
+      },
       "nsis": {
         "installMode": "currentUser",
         "languages": ["German", "English"]
