@@ -45,6 +45,12 @@ pub struct ConnectorConfig {
     /// KIM-Clientmodule am localhost präsentieren oft selbstsignierte Zertifikate.
     #[serde(default = "default_true")]
     pub kim_allow_invalid_cert: bool,
+
+    /// VDDS-Austausch-Verzeichnis (wo der Connector die `VDDS_MMO.INI` + das PDF
+    /// für den PVS-Import ablegt). Leer = Windows-Temp. Am Z1 ggf. ein festes
+    /// Abholverzeichnis eintragen. Siehe docs/OPERATIONS.md.
+    #[serde(default)]
+    pub exchange_dir: String,
 }
 
 fn default_true() -> bool {
@@ -63,6 +69,18 @@ impl Default for ConnectorConfig {
             kim_password: String::new(),
             kim_poll_seconds: default_poll(),
             kim_allow_invalid_cert: true,
+            exchange_dir: String::new(),
+        }
+    }
+}
+
+impl ConnectorConfig {
+    /// Austausch-Verzeichnis für VDDS-media (konfiguriert oder Windows-Temp).
+    pub fn exchange_dir_path(&self) -> std::path::PathBuf {
+        if self.exchange_dir.trim().is_empty() {
+            std::env::temp_dir()
+        } else {
+            std::path::PathBuf::from(self.exchange_dir.trim())
         }
     }
 }

@@ -70,9 +70,11 @@ BEMERKUNG=Erstellt über Praxishub\r\n",
     )
 }
 
-/// Schreibt die Austausch-INT in ein Temp-Verzeichnis und gibt ihren Pfad zurück.
-fn write_exchange_ini(req: &ImportRequest) -> Result<PathBuf> {
-    let path = std::env::temp_dir().join("VDDS_MMO.INI");
+/// Schreibt die Austausch-INI ins (konfigurierte) Austausch-Verzeichnis und gibt
+/// ihren Pfad zurück. `exchange_dir` = `ConnectorConfig::exchange_dir_path()`.
+fn write_exchange_ini(req: &ImportRequest, exchange_dir: &Path) -> Result<PathBuf> {
+    std::fs::create_dir_all(exchange_dir)?;
+    let path = exchange_dir.join("VDDS_MMO.INI");
     let text = build_mmo_ini(req);
     let (bytes, _, _) = WINDOWS_1252.encode(&text);
     std::fs::write(&path, bytes)?;
@@ -82,14 +84,15 @@ fn write_exchange_ini(req: &ImportRequest) -> Result<PathBuf> {
 /// Legt ein PDF über das registrierte PVS-Import-Programm in die Akte.
 ///
 /// `pvs_program` = Pfad zum media-Import-Executable des PVS (aus `VDDS_MMI.INI`).
-pub fn import_document(pvs_program: &Path, req: &ImportRequest) -> Result<()> {
+/// `exchange_dir` = Austausch-Verzeichnis (Config; leer → Windows-Temp).
+pub fn import_document(pvs_program: &Path, req: &ImportRequest, exchange_dir: &Path) -> Result<()> {
     if !req.pdf_path.exists() {
         return Err(ConnectorError::Vdds(format!(
             "PDF nicht gefunden: {}",
             req.pdf_path.display()
         )));
     }
-    let ini_path = write_exchange_ini(req)?;
+    let ini_path = write_exchange_ini(req, exchange_dir)?;
 
     // Konvention: Aufruf `<pvs_program> <pfad-zur-MMO.ini>`. Exakte CLI-Signatur
     // (Schalter wie /import, Rückgabe-Konvention) am Z1 verifizieren.

@@ -21,6 +21,7 @@ interface ConnectorConfig {
   kim_user: string;
   kim_password: string;
   kim_poll_seconds: number;
+  exchange_dir: string;
 }
 
 let cfg: ConnectorConfig = blankConfig();
@@ -35,6 +36,7 @@ function blankConfig(): ConnectorConfig {
     kim_user: "",
     kim_password: "",
     kim_poll_seconds: 60,
+    exchange_dir: "",
   };
 }
 
@@ -164,6 +166,8 @@ function collectFromWizard(): ConnectorConfig {
     kim_user: val("kim_user"),
     kim_password: val("kim_password"),
     kim_poll_seconds: 60,
+    // Feld nur im Dashboard vorhanden → im Wizard bestehenden Wert bewahren.
+    exchange_dir: ($("#exchange_dir") as HTMLInputElement | null) ? val("exchange_dir") : cfg.exchange_dir,
   };
 }
 
@@ -256,6 +260,7 @@ function renderDashboard() {
         <div class="field"><label>KIM-Postfach (Benutzer)</label><input id="kim_user" /></div>
         <div class="field"><label>KIM-Passwort</label><input id="kim_password" type="password" /></div>
       </div>
+      <div class="field"><label>VDDS-Austausch-Verzeichnis (leer = Temp)</label><input id="exchange_dir" placeholder="z. B. C:\\VDDS\\Austausch" /></div>
       <div class="actions">
         <button class="primary" id="save">Speichern</button>
         <button id="test_cloud">Cloud testen</button>
@@ -316,6 +321,7 @@ function applyConfig(c: ConnectorConfig) {
   setIf("kim_port", String(c.kim_port ?? 995));
   setIf("kim_user", c.kim_user);
   setIf("kim_password", c.kim_password);
+  setIf("exchange_dir", c.exchange_dir);
 }
 
 async function saveFromDashboard() {
