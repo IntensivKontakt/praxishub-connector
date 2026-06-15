@@ -48,7 +48,8 @@ jobs:
           endpoint: ${{ vars.TRUSTED_SIGNING_ENDPOINT }}
           trusted-signing-account-name: ${{ vars.TRUSTED_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ vars.TRUSTED_SIGNING_PROFILE }}
-          files-folder: src-tauri\target\release\bundle
+          # Cargo-Workspace → Bundle liegt im Workspace-Root-target/, NICHT unter src-tauri/.
+          files-folder: target\release\bundle
           files-folder-filter: exe,msi
           files-folder-recurse: true
           file-digest: SHA256
@@ -58,4 +59,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: praxishub-connector-signed
-          path: src-tauri/target/release/bundle/**/*.exe
+          path: target/release/bundle/**/*.exe
