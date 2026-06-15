@@ -55,14 +55,32 @@ lernen, wie Z1 sich verhält) — bitte notieren/screenshotten, was unten als
 ### A) Cloud-Heartbeat ✅ erwartet
 - Im Praxishub-Dashboard sollte der Connector als **aktiv / „zuletzt gesehen"** auftauchen.
 
-### B) VDDS-media — Dokumentenablage 👀 beobachten + zurückmelden
-Hier sind wir bewusst im Beobachten-Modus (Antwortprotokoll am Z1 noch zu verifizieren):
-- [ ] Taucht **Praxishub in Z1 als VDDS-Modul** auf bzw. wird es aufgerufen? (z. B. über
-      einen „Bilder/Dokumente holen"-Button am Patienten, oder in der Modul-/Geräteliste.)
-- [ ] Test-Patienten in Z1 öffnen, die Praxishub-Aktion auslösen → **kommt im Connector der
-      Patientenkontext an**? Wird ein **Test-PDF in die Z1-Akte** übernommen?
-- 📸 **Bitte notieren/screenshotten:** WIE bietet Z1 das an (Button/Pfad/Menü)? Welche
-  Meldung kommt? Genau das brauche ich, um die Dokument-Ablage fertig zu bauen.
+### B) VDDS-media — Z1-Fähigkeiten erheben (KEIN „Holen"-Button suchen!)
+**Wichtig vorab:** VDDS-media ist standardmäßig PVS-initiiert — Z1 hat **keinen** generischen
+„Dokumente holen"-Button und baut auch keinen. Der von uns gewünschte Weg (jede unterschriebene
+Anamnese landet **automatisch** in der Z1-Akte) läuft über **VDDS-media Stufe 6 (BVS→PVS-Push)**:
+Der Connector ruft Z1s Import-Modul `MMOINFIMPORT` auf und übergibt das PDF — ohne Klick in Z1.
+Damit das geht, müssen wir im Piloten nur **zwei Dinge aus Z1 herauslesen**:
+
+**B1 — `VDDS_MMI.INI` kopieren (das ist der wichtigste Artefakt!).**
+- [ ] Datei `VDDS_MMI.INI` im Windows-Verzeichnis (`C:\Windows\VDDS_MMI.INI`, ggf. auch
+      `Virtual Store`) **komplett kopieren / screenshotten** und mir schicken.
+- Entscheidend ist die **Z1/PVS-Sektion** — welche Module hat Z1 registriert?
+  - `MMOINFIMPORT=` (PVS-Importmodul) → **vorhanden = Auto-Push möglich** ✅
+  - `PATDATIMPORT=` (bekommt Patientenkontext beim Öffnen) → für die PATID-Zuordnung
+  - `IDEXPORT=` / `PVSLIMIT=` / unterstützte Datei-/Objekt-Typen → schreibe alles auf, was dort steht
+- Nach unserer „Bei PVS registrieren"-Aktion sollte **auch eine `PRAXISHUB…`-BVS-Sektion** drinstehen
+  → bitte mit-kopieren (bestätigt, dass die Registrierung gegriffen hat).
+
+**B2 — Eine normale Patienten-/Bild-Aktion in Z1 auslösen (PATID-Zuordnung testen).**
+- [ ] In Z1 einen **Test-Patienten öffnen** und eine **Röntgen-/Bild-/Mediafunktion** starten,
+      die normalerweise eine Fremdsoftware aufruft (so wie das Team es täglich macht).
+- [ ] Danach in den Connector-Logs prüfen: **kommt ein VDDS-Aufruf mit Patientenkontext
+      (Name/Geburtsdatum/PATID) an?** (Genau daraus bauen wir später die Patienten-Zuordnung.)
+- 📸 Notieren: Über welchen Weg/Button ruft Z1 normalerweise Fremdmodule auf?
+
+Mit `VDDS_MMI.INI` + einem beobachteten PATDATIMPORT-Aufruf weiß ich sicher, ob der Auto-Push
+direkt funktioniert oder ob wir einen Fallback (CGM-PRAXISARCHIV-Import) brauchen.
 
 ### C) KIM/EBZ — HKP-Erkennung 👀
 - [ ] Liegt/trifft ein **genehmigter HKP (EBZ-Antwort)** im KIM-Postfach ein → im Praxishub
@@ -80,10 +98,13 @@ Hier sind wir bewusst im Beobachten-Modus (Antwortprotokoll am Z1 noch zu verifi
 - „KIM testen" / „Cloud testen" im Fenster zum Eingrenzen nutzen.
 
 ## 6. Bitte zurückmelden
+- 📄 **`VDDS_MMI.INI` (komplett)** — der wichtigste Artefakt (siehe B1).
 - 📸 Connector-Status-Fenster (Cloud/KIM/PVS grün?).
-- Antworten zu **B** (VDDS-media: Button/Pfad/Verhalten) und **C** (HKP erkannt?).
+- Zu **B2**: kam ein VDDS-Aufruf mit Patientenkontext im Connector-Log an? Wie ruft Z1 Fremdmodule auf?
+- Zu **C**: HKP/EBZ erkannt? (oder: liegen welche im Postfach / wann kommt der nächste?)
 - Welche **KIM-Host/Ports** real galten.
 - Beobachtete Fehlermeldungen (Screenshot/Text).
 
-Mit diesen Infos schließe ich die VDDS-media-Dokumentenablage und (bei vorhandenem
-EBZ-Sample) das HKP-Parsing/die Auto-Einbestellung ab.
+Mit `VDDS_MMI.INI` + einem beobachteten PATDATIMPORT-Aufruf entscheide ich, ob der
+**Auto-Push (Stufe 6, `MMOINFIMPORT`)** direkt baubar ist, und schließe dann die automatische
+Dokumentenablage ab. Bei vorhandenem EBZ-Sample folgt HKP-Parsing/Auto-Einbestellung.
