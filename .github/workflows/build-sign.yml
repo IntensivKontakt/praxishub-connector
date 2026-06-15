@@ -48,11 +48,6 @@ jobs:
           npm ci
           npm run tauri build
 
-      - name: sign-Log (Diagnose, immer)
-        if: always()
-        shell: pwsh
-        run: Get-Content "$env:RUNNER_TEMP\sign.log" -ErrorAction SilentlyContinue
-
       - name: Signaturen verifizieren
         shell: pwsh
         run: |
