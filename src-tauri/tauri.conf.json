@@ -38,7 +38,6 @@
       "icons/icon.ico"
     ],
     "windows": {
-      "signCommand": "sign code artifact-signing --artifact-signing-endpoint https://neu.codesigning.azure.net/ --artifact-signing-account Praxishub --artifact-signing-certificate-profile praxishub-connector --azure-credential-type azure-cli --timestamp-url http://timestamp.acs.microsoft.com -v information %1",
       "nsis": {
         "installMode": "currentUser",
         "languages": ["German", "English"]

@@ -60,3 +60,25 @@ Grün = das Signing-Setup steht.
   sodass auch die inneren Binaries signiert werden (alternativ Post-Build über die
   Action auf den `bundle`-Ordner, wie in `build-sign.yml`).
 - Action-Version (`azure/trusted-signing-action`) bei Bedarf auf neueste bumpen.
+
+## Bekannte Grenzen (Stand 2026-06-15)
+
+- **Installer ist signiert** (Azure Trusted Signing, OIDC, Herausgeber
+  „IntensivKontakt GmbH & Co. KG") — das ist der SmartScreen-relevante Teil für
+  die Verteilung. ✅
+- **Innere App-`.exe` noch NICHT signiert.** Der saubere Weg (Tauri
+  `bundle.windows.signCommand`, der die App-.exe *während* des Builds signiert)
+  scheiterte reproduzierbar an einem **`%1`-Substitutions-Bug der Tauri-CLI**:
+  der Platzhalter `%1` wird literal an das Signier-Tool übergeben (Diagnose:
+  `Some files do not exist … \%1`), in String- **und** Objekt-Form. 5 Release-Builds
+  bestätigt. Folge: nur Post-Build-Signierung des Installers möglich.
+  - **Auth-Nebenfund:** `trusted-signing-cli` (gängiges signCommand-Tool) braucht
+    `AZURE_CLIENT_SECRET` und ist mit unserem OIDC-Setup inkompatibel. Microsofts
+    `sign code artifact-signing --azure-credential-type azure-cli` funktioniert per
+    OIDC (im Smoke verifiziert) — aber eben nur, wenn Tauri `%1` ersetzt.
+  - **Optionen zum Nachziehen:** (a) Tauri-CLI-Update abwarten/prüfen, ob der
+    `%1`-Bug behoben ist; (b) zweiphasiger Build (`tauri build --no-bundle` →
+    App-.exe per Action signieren → `tauri bundle` → Installer signieren → `.sig`
+    neu); (c) Client-Secret + `trusted-signing-cli` als signCommand (verwirft OIDC).
+- **Updater-`.sig`:** wird nach dem Authenticode-Signieren über den signierten
+  Installer **neu erzeugt** (`tauri signer sign`), damit die Auto-Update-Prüfung passt.

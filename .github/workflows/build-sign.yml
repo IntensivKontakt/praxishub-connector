@@ -1,9 +1,10 @@
 name: Build & Sign (Release)
 
-# Echter Release-Build. Signiert App-.exe UND Installer WÄHREND des Builds via
-# Tauris signCommand (Microsoft `sign`-Tool + Azure Trusted Signing, OIDC/azure-cli
-# — kein Client-Secret). Dadurch ist die Updater-.sig über den bereits signierten
-# Installer korrekt. Triggert auf Versions-Tags (v*) oder manuell.
+# Release-Build. Signiert den NSIS-Installer per Azure Trusted Signing (OIDC,
+# bewährt). Hinweis: Tauris `signCommand` (innere App-.exe während des Builds)
+# scheiterte an einem %1-Substitutions-Bug der Tauri-CLI — daher Post-Build-
+# Signierung des Installers + Neuerzeugung der Updater-.sig über den signierten
+# Installer. Siehe docs/SIGNING.md („Bekannte Grenzen").
 
 on:
   push:
@@ -25,22 +26,7 @@ jobs:
           node-version: 20
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: sign-Tool installieren (für Tauri signCommand)
-        shell: pwsh
-        run: |
-          dotnet tool install --global sign --prerelease
-          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      # OIDC-Login MUSS vor dem Build laufen, damit signCommand (azure-cli credential)
-      # während `tauri build` authentifiziert ist.
-      - name: Azure Login (OIDC)
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Build + Signieren (signCommand signiert App-.exe + Installer, dann Updater-.sig)
+      - name: Dependencies & Tauri-Bundle bauen
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
@@ -48,23 +34,46 @@ jobs:
           npm ci
           npm run tauri build
 
-      - name: Signaturen verifizieren
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Installer signieren (Trusted Signing)
+        uses: azure/trusted-signing-action@v0.5.1
+        with:
+          endpoint: ${{ vars.TRUSTED_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.TRUSTED_SIGNING_PROFILE }}
+          files-folder: target\release\bundle
+          files-folder-filter: exe,msi
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # Die Updater-.sig wurde während des Bundles über den NOCH unsignierten
+      # Installer erzeugt → nach dem Authenticode-Signieren neu erzeugen, sonst
+      # schlägt die Auto-Update-Signaturprüfung fehl. Best-effort (bricht nicht).
+      - name: Updater-.sig neu erzeugen (über signierten Installer)
+        continue-on-error: true
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          $exe = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
+          npx tauri signer sign --private-key "$env:TAURI_SIGNING_PRIVATE_KEY" --password "" "$($exe.FullName)"
+
+      - name: Signatur verifizieren (Installer)
         shell: pwsh
         run: |
-          $bad = 0
-          Get-ChildItem target/release/bundle/nsis -Filter *.exe | ForEach-Object {
-            $sig = Get-AuthenticodeSignature $_.FullName
-            Write-Host "$($_.Name): $($sig.Status) — $($sig.SignerCertificate.Subject)"
-            if ($sig.Status -ne 'Valid') { $bad = 1 }
-          }
-          # auch die innere App-.exe
-          $app = Get-ChildItem target/release -Filter praxishub-connector.exe
-          if ($app) {
-            $s = Get-AuthenticodeSignature $app.FullName
-            Write-Host "App-exe: $($s.Status) — $($s.SignerCertificate.Subject)"
-            if ($s.Status -ne 'Valid') { $bad = 1 }
-          }
-          exit $bad
+          $exe = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
+          $sig = Get-AuthenticodeSignature $exe.FullName
+          Write-Host "$($exe.Name): $($sig.Status) — $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') { exit 1 }
 
       - uses: actions/upload-artifact@v4
         with:
