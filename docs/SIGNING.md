@@ -17,7 +17,8 @@ Siehe auch Linear **PRA-15**.
 | Client-ID | `a5cd9665-c665-424b-95bf-be4908caf24a` |
 | Rolle auf dem Account | `Artifact Signing Certificate Profile Signer` |
 | OIDC Federated Credentials | `repo:IntensivKontakt/praxishub-connector:ref:refs/heads/main` · `…:environment:release` |
-| Certificate Profile | ⏳ **offen** — anlegen, sobald Identity Validation freigegeben ist |
+| Certificate Profile | ✅ `praxishub-connector` (PublicTrust, **Active**), angelegt 2026-06-15 |
+| Identity Validation | ✅ Completed — ID `30a94f10-c762-4ac0-8e3e-75d59447d291` (Herausgeber „IntensivKontakt GmbH & Co. KG") |
 
 > Die GUIDs sind keine Geheimnisse (OIDC = kein Client-Secret). Der in der
 > Signatur sichtbare Herausgeber kommt aus der **Identity Validation** (= geprüfter
@@ -29,18 +30,20 @@ Siehe auch Linear **PRA-15**.
 - **Variables:** `TRUSTED_SIGNING_ENDPOINT`, `TRUSTED_SIGNING_ACCOUNT`, `TRUSTED_SIGNING_PROFILE`
 - **Environment:** `release` (an den OIDC-Credential gebunden)
 
-## Letzter offener Schritt: Certificate Profile (nach Freigabe)
+## Certificate Profile (✅ angelegt 2026-06-15)
 
-Sobald die Identity Validation auf *Completed/Approved* steht:
+Identity Validation freigegeben → Profil per CLI angelegt (für Referenz/Neuanlage):
 
 ```bash
 az rest --method put \
-  --url "https://management.azure.com/subscriptions/bac98e41-8609-4ccf-b33e-29f8e36d581f/resourceGroups/IntensivKontakt/providers/Microsoft.CodeSigning/codeSigningAccounts/Praxishub/certificateProfiles/praxishub-connector?api-version=2024-09-30-preview" \
-  --body '{"properties":{"profileType":"PublicTrust","identityValidationId":"<VALIDATION-ID>"}}'
+  --url "https://management.azure.com/subscriptions/bac98e41-8609-4ccf-b33e-29f8e36d581f/resourceGroups/IntensivKontakt/providers/Microsoft.CodeSigning/codeSigningAccounts/Praxishub/certificateProfiles/praxishub-connector?api-version=2025-10-13" \
+  --body '{"properties":{"profileType":"PublicTrust","identityValidationId":"30a94f10-c762-4ac0-8e3e-75d59447d291"}}'
 ```
 
-(`<VALIDATION-ID>` = ID der freigegebenen Identitätsvalidierung; danach ggf.
-`TRUSTED_SIGNING_PROFILE` auf den Profilnamen setzen, falls abweichend.)
+Status: `provisioningState=Succeeded`, `status=Active`, Herausgeber
+„IntensivKontakt GmbH & Co. KG". `TRUSTED_SIGNING_PROFILE` = `praxishub-connector`
+(GitHub-Variable gesetzt). **Signing Smoke Test grün** → Kette OIDC → Azure →
+gültige Signatur (`Valid`) bestätigt.
 
 ## Verifizieren
 
