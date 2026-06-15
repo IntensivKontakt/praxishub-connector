@@ -39,6 +39,8 @@ struct Heartbeat<'a> {
     version: &'a str,
     vdds_registered: bool,
     kim_watching: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_error: Option<&'a str>,
 }
 
 impl CloudClient {
@@ -79,11 +81,17 @@ impl CloudClient {
         }
     }
 
-    pub async fn heartbeat(&self, vdds_registered: bool, kim_watching: bool) -> Result<()> {
+    pub async fn heartbeat(
+        &self,
+        vdds_registered: bool,
+        kim_watching: bool,
+        last_error: Option<&str>,
+    ) -> Result<()> {
         let body = Heartbeat {
             version: env!("CARGO_PKG_VERSION"),
             vdds_registered,
             kim_watching,
+            last_error,
         };
         self.auth(self.http.post(self.url("heartbeat")))
             .json(&body)

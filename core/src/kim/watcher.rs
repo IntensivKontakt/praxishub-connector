@@ -93,17 +93,27 @@ impl Watcher {
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    match self.poll_once().await {
+                    let last_error = match self.poll_once().await {
                         Ok(n) => {
                             self.status.set_kim(Component::new(
                                 Health::Ok,
                                 format!("aktiv · {n} HKP(s) zuletzt gemeldet"),
                             ));
+                            None
                         }
                         Err(e) => {
                             warn!(error = %e, "KIM-Poll fehlgeschlagen");
-                            self.status.set_kim(Component::new(Health::Err, format!("Fehler: {e}")));
+                            let s = e.to_string();
+                            self.status.set_kim(Component::new(Health::Err, format!("Fehler: {s}")));
+                            Some(s)
                         }
+                    };
+                    // Heartbeat IMMER senden (auch bei Fehler) → Backend-Watchdog
+                    // sieht sofort Stille (Dienst tot) oder gemeldete Fehler.
+                    let vdds_ok = self.status.snapshot().vdds.state == Health::Ok;
+                    match self.cloud.heartbeat(vdds_ok, true, last_error.as_deref()).await {
+                        Ok(()) => self.status.set_cloud(Component::new(Health::Ok, "verbunden")),
+                        Err(e) => self.status.set_cloud(Component::new(Health::Warn, format!("Cloud: {e}"))),
                     }
                 }
                 _ = shutdown.changed() => {
@@ -173,12 +183,7 @@ impl Watcher {
 
         // Dedup-Store auf Server-Bestand eindampfen.
         self.seen.retain_only(&current);
-
-        // Best-effort-Heartbeat (Cloud-Status aktualisieren).
-        match self.cloud.heartbeat(false, true).await {
-            Ok(()) => self.status.set_cloud(Component::new(Health::Ok, "verbunden")),
-            Err(e) => self.status.set_cloud(Component::new(Health::Warn, format!("Cloud: {e}"))),
-        }
+        // Heartbeat wird zentral im run-Loop gesendet (immer, auch bei Fehler).
 
         Ok(reported)
     }
