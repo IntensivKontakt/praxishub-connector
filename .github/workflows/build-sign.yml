@@ -1,9 +1,10 @@
 name: Build & Sign (Release)
 
-# Release-Build. signCommand (src-tauri/sign-wrap.ps1, pwsh → Microsoft `sign`-Tool,
-# Azure Trusted Signing via OIDC/azure-cli) signiert App-.exe UND Installer WÄHREND
-# des Builds (nach dem exe-Patch, vor der Updater-.sig → .sig korrekt). Triggert auf
-# Versions-Tags (v*) oder manuell.
+# Release-Build. Kompiliert ZUERST ohne Bundle (langer Schritt, kein Azure), dann
+# FRISCHES OIDC-Login direkt vor `tauri bundle` — die GitHub-OIDC-Assertion ist nur
+# ~5 Min gültig, der Compile davor würde sie sonst ablaufen lassen (AADSTS700024).
+# signCommand (src-tauri/sign-wrap.ps1 → Microsoft `sign`-Tool, Azure Trusted Signing)
+# signiert App-.exe + Installer während des Bundles (vor der Updater-.sig).
 
 on:
   push:
@@ -25,28 +26,31 @@ jobs:
           node-version: 20
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: sign-Tool installieren (für signCommand)
+      - name: sign-Tool installieren
         shell: pwsh
         run: |
           dotnet tool install --global sign --prerelease
           "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      # OIDC-Login VOR dem Build: signCommand (azure-cli credential) braucht die
-      # az-Session während `tauri build`.
-      - name: Azure Login (OIDC)
+      - name: Kompilieren ohne Bundle (langer Schritt, kein Azure nötig)
+        run: |
+          npm ci
+          npm run tauri build -- --no-bundle
+
+      # Frisches OIDC-Login DIREKT vor dem Bundle, damit die ~5-min-Assertion beim
+      # signCommand noch gültig ist (sonst AADSTS700024 nach langem Compile).
+      - name: Azure Login (OIDC) — frisch vor dem Signieren
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: "Build + Signieren (signCommand → App-.exe + Installer, dann Updater-.sig)"
+      - name: Bundle + Signieren (signCommand schnell, in der Token-Frist)
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        run: |
-          npm ci
-          npm run tauri build
+        run: npm run tauri bundle
 
       - name: sign-Log (Diagnose, immer)
         if: always()
@@ -60,12 +64,12 @@ jobs:
           $app = Get-ChildItem target/release -Filter praxishub-connector.exe -ErrorAction SilentlyContinue
           if ($app) {
             $s = Get-AuthenticodeSignature $app.FullName
-            Write-Host "App-exe: $($s.Status) — $($s.SignerCertificate.Subject)"
+            Write-Host "App-exe: $($s.Status) - $($s.SignerCertificate.Subject)"
             if ($s.Status -ne 'Valid') { $bad = 1 }
           } else { Write-Host "App-exe nicht gefunden"; $bad = 1 }
           Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | ForEach-Object {
             $s = Get-AuthenticodeSignature $_.FullName
-            Write-Host "$($_.Name): $($s.Status) — $($s.SignerCertificate.Subject)"
+            Write-Host "$($_.Name): $($s.Status) - $($s.SignerCertificate.Subject)"
             if ($s.Status -ne 'Valid') { $bad = 1 }
           }
           exit $bad
