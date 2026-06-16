@@ -21,7 +21,23 @@ fn main() {
 
     // Vom PVS via VDDS-media aufgerufen? (Argument = Pfad auf eine .ini-Datei)
     if let Some(ini) = args.iter().skip(1).find(|a| connector_core::vdds::media::is_media_invocation(a)) {
-        let code = match connector_core::vdds::media::handle_invocation(std::path::Path::new(ini)) {
+        let path = std::path::Path::new(ini);
+
+        // MMOEXPORT-Abruf (Pull): ConVis holt eine per MMOINFIMPORT angekündigte
+        // Dokumentkopie ab — wir tragen den Dateipfad in die INI ein und quittieren.
+        // Muss VOR der Patienten-Behandlung stehen (Export-INI hat keinen Patienten).
+        if connector_core::vdds::media::is_export_request(path) {
+            let exchange = connector_core::ConnectorConfig::load()
+                .map(|c| c.exchange_dir_path())
+                .unwrap_or_else(|_| std::env::temp_dir());
+            let code = match connector_core::vdds::media::handle_export_request(path, &exchange) {
+                Ok(out) if out.missing.is_empty() && out.resolved > 0 => 0,
+                _ => 1,
+            };
+            std::process::exit(code);
+        }
+
+        let code = match connector_core::vdds::media::handle_invocation(path) {
             Ok(patient) => {
                 // Variante A: Z1 hat einen Patienten geöffnet und übergibt uns die
                 // echte PATID — jetzt dessen offene Praxishub-Dokumente ablegen.
@@ -120,7 +136,18 @@ fn run_push_test(args: &[String]) -> i32 {
     };
     let req = media::ImportRequest { patient: &patient, pdf_path: &pdf_path, kind };
 
-    match media::import_once_diagnostic(&import_program, &req, &cfg.exchange_dir_path()) {
+    // Stabile, dateinamen-sichere MMOID aus dem PDF-Namen — unter ihr wird die
+    // Kopie gestaged, damit ein MMOEXPORT-Pull von ConVis sie findet.
+    let stem: String = pdf_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("doc")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let mmoid = format!("PHTEST_{stem}");
+
+    match media::import_once_diagnostic(&import_program, &req, &cfg.exchange_dir_path(), &mmoid) {
         Ok(d) => {
             let ready_done = d.ready.as_deref() == Some("1");
             let ok = ready_done && d.errorlevel.as_deref() == Some("0");

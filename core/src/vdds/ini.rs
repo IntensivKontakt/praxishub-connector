@@ -129,8 +129,16 @@ pub fn register_in(ini: &mut Ini, reg: &VddsRegistration) {
     ini.set(SECTION, "PATDATIMPORT", &prog);
     ini.set(SECTION, "PATDATIMPORT_OS", "1");
     ini.set(SECTION, "PATDATIMPORT_EVENT", "");
+    // MMOEXPORT = unser Bildkopie-/Dokument-Export (Stufe 4). Nötig, weil ConVis
+    // keinen DIRECTIMAGEIMPORT bietet: Nach unserem MMOINFIMPORT-Push HOLT der PVS
+    // die Dokumentkopie per Pull über genau dieses Modul ab (VDDS-media Tabelle 8/9,
+    // beantwortet von [`crate::vdds::media::handle_export_request`]).
+    ini.set(SECTION, "MMOEXPORT", &prog);
+    ini.set(SECTION, "MMOEXPORT_OS", "1");
+    ini.set(SECTION, "MMOEXPORT_EVENT", "");
     ini.set(SECTION, "PFAD", &dir);
-    ini.set(SECTION, "STAGES", "16"); // Patientenübergabe (1) + Info-Import-Push (6)
+    // Realisierte BVS-Stufen: Patientenübergabe (1) + Bildkopie-Export/Pull (4).
+    ini.set(SECTION, "STAGES", "14");
     ini.set(SECTION, "VERSION", MEDIA_VERSION);
 }
 
@@ -325,6 +333,13 @@ NAME=Erfassung über PraxisArchiv - ConVis\r\n";
             ini.get(SECTION, "PATDATIMPORT"),
             Some("C:\\Apps\\praxishub-connector.exe")
         );
+        // MMOEXPORT (Pull-Modul) muss registriert sein, sonst kann ConVis unsere
+        // Dokumentkopie nach dem Push nicht abholen.
+        assert_eq!(
+            ini.get(SECTION, "MMOEXPORT"),
+            Some("C:\\Apps\\praxishub-connector.exe")
+        );
+        assert_eq!(ini.get(SECTION, "STAGES"), Some("14"));
         assert_eq!(ini.get(SECTION, "VERSION"), Some(MEDIA_VERSION));
         // bestehende Z1-Einträge bleiben unangetastet
         assert_eq!(ini.get(BVS_INDEX, "NAME1"), Some("CONVIS_PRAXISARCHIV"));

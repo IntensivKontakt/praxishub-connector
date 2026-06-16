@@ -134,14 +134,18 @@ impl VddsTarget {
 
 /// Baut den `VDDS_MMO.INI`-Austauschtext für den **MMOINFIMPORT-Push**
 /// (VDDS-media 1.4, Tabelle 5–7). Patient via `[PATID]` (PATID Pflicht,
-/// englische Feldnamen), Objekt als direkt übergebene Datei per `IMAGEDATA=`
+/// englische Feldnamen), Objekt in `[MMO1]` mit der übergebenen `mmoid`
 /// (`EXT=PDF`, Dokument → `COLORTYPE=LINEART`). `READY/ERRORLEVEL` als Handshake.
-pub fn build_mmo_ini(req: &ImportRequest, target: &VddsTarget) -> String {
+///
+/// **Bewusst OHNE `IMAGEDATA=`:** ConVis (PVS_ARCHIV) deklariert keinen
+/// `DIRECTIMAGEIMPORT` — laut Tabelle 7 darf die BVS dann keine Dateikopie direkt
+/// mitschicken. Stattdessen holt der PVS die Datei nach dem Push per **Pull über
+/// unser MMOEXPORT** (Tabelle 8/9) ab, identifiziert über genau diese `mmoid`
+/// (siehe [`handle_export_request`]).
+pub fn build_mmo_ini(req: &ImportRequest, target: &VddsTarget, mmoid: &str) -> String {
     let p = req.patient;
     let (type_text, typenr) = req.kind.media_type();
-    let now = chrono::Local::now();
-    let date = now.format("%Y%m%d").to_string(); // CCYYMMDD
-    let mmoid = now.format("PH%Y%m%d%H%M%S").to_string(); // eindeutige Objekt-ID
+    let date = chrono::Local::now().format("%Y%m%d").to_string(); // CCYYMMDD
     let mut s = String::new();
     // Kopf-/Patientensektion (Tabelle 5).
     s.push_str("[PATID]\r\n");
@@ -167,17 +171,17 @@ pub fn build_mmo_ini(req: &ImportRequest, target: &VddsTarget) -> String {
     s.push_str("COLORTYPE=LINEART\r\n");
     s.push_str(&format!("DATE={date}\r\n"));
     s.push_str("COMMENT=Erstellt über Praxishub\r\n");
-    s.push_str(&format!("IMAGEDATA={}\r\n", req.pdf_path.to_string_lossy()));
+    // KEIN IMAGEDATA — der PVS pullt die Datei per MMOEXPORT (s. Doc-Kommentar).
     s
 }
 
 /// Schreibt die Austausch-INI ins (konfigurierte) Austausch-Verzeichnis und gibt
 /// ihren Pfad zurück. `exchange_dir` = `ConnectorConfig::exchange_dir_path()`.
-fn write_exchange_ini(req: &ImportRequest, exchange_dir: &Path) -> Result<PathBuf> {
+fn write_exchange_ini(req: &ImportRequest, exchange_dir: &Path, mmoid: &str) -> Result<PathBuf> {
     std::fs::create_dir_all(exchange_dir)?;
     let path = exchange_dir.join("VDDS_MMO.INI");
     let target = VddsTarget::from_mmi_ini();
-    let text = build_mmo_ini(req, &target);
+    let text = build_mmo_ini(req, &target, mmoid);
     let (bytes, _, _) = WINDOWS_1252.encode(&text);
     std::fs::write(&path, bytes)?;
     Ok(path)
@@ -209,8 +213,15 @@ fn import_succeeded(ini_path: &Path, exit_success: bool) -> bool {
 /// Ein einzelner Import-Aufruf: INI schreiben, PVS-Programm starten.
 /// `Ok(true)` = PVS meldete Erfolg, `Ok(false)` = Programm lief, lehnte aber ab
 /// (z. B. Patient nicht gefunden), `Err` = Programm gar nicht startbar (Konfig).
-fn run_import(import_program: &Path, req: &ImportRequest, exchange_dir: &Path) -> Result<bool> {
-    let ini_path = write_exchange_ini(req, exchange_dir)?;
+fn run_import(
+    import_program: &Path,
+    req: &ImportRequest,
+    exchange_dir: &Path,
+    mmoid: &str,
+) -> Result<bool> {
+    let ini_path = write_exchange_ini(req, exchange_dir, mmoid)?;
+    // Dokumentkopie für den MMOEXPORT-Pull bereitlegen (ConVis holt sie ab).
+    stage_pdf(req.pdf_path, exchange_dir, mmoid)?;
     // Konvention: `<programm> <pfad-zur-MMO.ini>` — exakte CLI-Signatur am Z1 verifizieren.
     let status = std::process::Command::new(import_program)
         .arg(&ini_path)
@@ -218,6 +229,18 @@ fn run_import(import_program: &Path, req: &ImportRequest, exchange_dir: &Path) -
         .map_err(|e| ConnectorError::Vdds(format!("PVS-Programm nicht startbar: {e}")))?;
     // Erfolg über den READY/ERRORLEVEL-Handshake bewerten (Fallback: Exit-Code).
     Ok(import_succeeded(&ini_path, status.success()))
+}
+
+/// Legt die Dokumentkopie unter dem kanonischen Namen ([`mmo_pdf_name`]) im
+/// Austauschordner ab, damit ConVis sie nach dem Push per MMOEXPORT abholen kann.
+/// No-op, wenn die Quelle schon genau dort liegt.
+fn stage_pdf(pdf_src: &Path, exchange_dir: &Path, mmoid: &str) -> Result<PathBuf> {
+    std::fs::create_dir_all(exchange_dir)?;
+    let dst = exchange_dir.join(mmo_pdf_name(mmoid));
+    if pdf_src != dst {
+        std::fs::copy(pdf_src, &dst)?;
+    }
+    Ok(dst)
 }
 
 /// Diagnose eines **einzelnen** Import-Aufrufs — für `--push-test` am echten Z1.
@@ -249,6 +272,7 @@ pub fn import_once_diagnostic(
     import_program: &Path,
     req: &ImportRequest,
     exchange_dir: &Path,
+    mmoid: &str,
 ) -> Result<ImportDiagnostics> {
     if !req.pdf_path.exists() {
         return Err(ConnectorError::Vdds(format!(
@@ -256,8 +280,10 @@ pub fn import_once_diagnostic(
             req.pdf_path.display()
         )));
     }
-    let sent_ini = build_mmo_ini(req, &VddsTarget::from_mmi_ini());
-    let ini_path = write_exchange_ini(req, exchange_dir)?;
+    let sent_ini = build_mmo_ini(req, &VddsTarget::from_mmi_ini(), mmoid);
+    let ini_path = write_exchange_ini(req, exchange_dir, mmoid)?;
+    // Dokumentkopie für den MMOEXPORT-Pull bereitlegen (ConVis holt sie ab).
+    stage_pdf(req.pdf_path, exchange_dir, mmoid)?;
     let status = std::process::Command::new(import_program)
         .arg(&ini_path)
         .status()
@@ -308,6 +334,7 @@ pub fn file_document(
     import_program: &Path,
     req: &ImportRequest,
     exchange_dir: &Path,
+    mmoid: &str,
 ) -> Result<FilingOutcome> {
     if !req.pdf_path.exists() {
         return Err(ConnectorError::Vdds(format!(
@@ -318,7 +345,7 @@ pub fn file_document(
 
     // MMOINFIMPORT ordnet AUSSCHLIESSLICH über die PATID zu — Tabelle 5 kennt keinen
     // Namens-/Geburtsdatum-Match. Greift die PATID nicht, bleibt nur Variante A.
-    if req.patient.has_patid() && run_import(import_program, req, exchange_dir)? {
+    if req.patient.has_patid() && run_import(import_program, req, exchange_dir, mmoid)? {
         tracing::info!(patid = %req.patient.patient_id, "VDDS-media: Dokument per PATID abgelegt");
         return Ok(FilingOutcome::Filed { matched_by: "patient_id" });
     }
@@ -335,6 +362,96 @@ pub fn file_document(
 /// existierende `.ini`-Datei (der PVS ruft unser registriertes Modul so auf).
 pub fn is_media_invocation(arg: &str) -> bool {
     arg.to_ascii_lowercase().ends_with(".ini") && Path::new(arg).is_file()
+}
+
+/// Kanonischer Dateiname der zwischengelagerten Dokumentkopie zu einer `MMOID`.
+/// Der MMOINFIMPORT-Push meldet die `MMOID`; ConVis holt die Datei anschließend
+/// per MMOEXPORT ab und findet sie unter genau diesem Namen im Austauschordner.
+pub fn mmo_pdf_name(mmoid: &str) -> String {
+    format!("praxishub_mmo_{mmoid}.pdf")
+}
+
+/// Ist die übergebene Austausch-INI ein **MMOEXPORT-Abruf** der PVS (Tabelle 8)?
+/// Erkennbar an der `[MMOIDS]`-Sektion (Liste angeforderter Bild-/Objekt-IDs) —
+/// im Gegensatz zum Patientenkontext (`[PATID]`/`[PATIENT]`) bei `PATDATIMPORT`.
+pub fn is_export_request(ini_path: &Path) -> bool {
+    match std::fs::read(ini_path) {
+        Ok(bytes) => {
+            let (text, _, _) = WINDOWS_1252.decode(&bytes);
+            crate::vdds::ini::Ini::parse(&text).has_section("MMOIDS")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Ergebnis eines MMOEXPORT-Abrufs.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ExportOutcome {
+    /// Wie viele angeforderte MMOIDs auf eine vorhandene Datei aufgelöst wurden.
+    pub resolved: usize,
+    /// Angeforderte MMOIDs, zu denen keine Datei (mehr) im Austauschordner lag.
+    pub missing: Vec<String>,
+}
+
+/// Beantwortet einen **MMOEXPORT-Abruf** der PVS (VDDS-media Tabelle 8 → 9).
+///
+/// ConVis bietet keinen Direktimport, also holt es nach unserem MMOINFIMPORT-Push
+/// die Dateikopie per Pull ab: Es schreibt die angeforderten `MMOID`s in
+/// `[MMOIDS]` und ruft unser als `MMOEXPORT` registriertes Modul. Wir tragen für
+/// jede MMOID in `[MMOPATH]` den Pfad zur bereitgestellten Kopie ein (aufgelöst
+/// über [`mmo_pdf_name`] im Austauschordner) und setzen den Handshake
+/// (`READY=1`, `ERRORLEVEL=0`/`1`, ggf. `ERRORTEXT`). Antwort wird in dieselbe
+/// INI zurückgeschrieben (Windows-1252).
+pub fn handle_export_request(ini_path: &Path, exchange_dir: &Path) -> Result<ExportOutcome> {
+    let bytes = std::fs::read(ini_path)?;
+    let (text, _, _) = WINDOWS_1252.decode(&bytes);
+    let mut ini = crate::vdds::ini::Ini::parse(&text);
+    let count: usize = ini
+        .get("MMOIDS", "COUNT")
+        .and_then(|c| c.trim().parse().ok())
+        .unwrap_or(0);
+
+    let mut out = ExportOutcome::default();
+    for i in 1..=count {
+        let key = format!("MMOID{i}");
+        let Some(mmoid) = ini.get("MMOIDS", &key).map(|s| s.trim().to_string()) else {
+            continue;
+        };
+        if mmoid.is_empty() {
+            continue;
+        }
+        let pdf = exchange_dir.join(mmo_pdf_name(&mmoid));
+        if pdf.exists() {
+            // [MMOPATH] MMOIDk = Pfad zur bereitgestellten Dateikopie (Tabelle 9).
+            ini.set("MMOPATH", &key, &pdf.to_string_lossy());
+            out.resolved += 1;
+        } else {
+            out.missing.push(mmoid);
+        }
+    }
+
+    let ok = out.missing.is_empty() && out.resolved > 0;
+    ini.set("MMOIDS", "ERRORLEVEL", if ok { "0" } else { "1" });
+    if !ok {
+        let why = if count == 0 {
+            "keine MMOID angefordert".to_string()
+        } else {
+            format!("Dokument(e) nicht gefunden: {}", out.missing.join(", "))
+        };
+        ini.set("MMOIDS", "ERRORTEXT", &why);
+    }
+    // READY zuletzt setzen (VDDS-Konvention: signalisiert „Bearbeitung fertig").
+    ini.set("MMOIDS", "READY", "1");
+
+    let answer = ini.to_text();
+    let (enc, _, _) = WINDOWS_1252.encode(&answer);
+    std::fs::write(ini_path, enc)?;
+    tracing::info!(
+        resolved = out.resolved,
+        missing = out.missing.len(),
+        "VDDS-media: MMOEXPORT-Abruf beantwortet"
+    );
+    Ok(out)
 }
 
 /// Liest den `[PATIENT]`-Kontext aus der vom PVS geschriebenen `VDDS_MMO.INI`
@@ -424,21 +541,23 @@ mod tests {
         let patient = patient_full();
         let pdf = PathBuf::from("C:\\tmp\\anamnese.pdf");
         let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Anamnese };
-        let ini = build_mmo_ini(&req, &test_target());
+        let ini = build_mmo_ini(&req, &test_target(), "PH-TEST");
         // Kopfsektion: Zuordnung NUR über PATID, mit PVS/BVS/FROMPVS/PRXNR.
         assert!(ini.contains("[PATID]\r\nPVS=CDP_Z1\r\n"));
         assert!(ini.contains("PATID=4711"));
         assert!(ini.contains("BVS=PRAXISHUB"));
         assert!(ini.contains("FROMPVS=CDP_Z1"));
         assert!(ini.contains("PRXNR=1"));
-        // Objektsektion mit direkter Dateiübergabe.
+        // Objektsektion: die übergebene MMOID ist der Pull-Schlüssel für MMOEXPORT.
         assert!(ini.contains("[MMOS]"));
         assert!(ini.contains("COUNT=1"));
         assert!(ini.contains("[MMO1]"));
+        assert!(ini.contains("MMOID=PH-TEST"));
         assert!(ini.contains("TYPENR=10")); // Formular
         assert!(ini.contains("EXT=PDF"));
         assert!(ini.contains("COLORTYPE=LINEART"));
-        assert!(ini.contains("IMAGEDATA=C:\\tmp\\anamnese.pdf"));
+        // KEIN IMAGEDATA (ConVis hat keinen DIRECTIMAGEIMPORT → Pull via MMOEXPORT).
+        assert!(!ini.contains("IMAGEDATA"));
         // Tabelle 5 hat KEINE Namensfelder, und alte (falsche) Schlüssel sind weg.
         assert!(!ini.contains("LASTNAME"));
         assert!(!ini.contains("FIRSTNAME"));
@@ -452,13 +571,14 @@ mod tests {
         let patient = patient_full();
         let pdf = PathBuf::from("C:\\tmp\\hkp.pdf");
         let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Hkp };
-        let ini = build_mmo_ini(&req, &test_target());
+        let ini = build_mmo_ini(&req, &test_target(), "PH-TEST");
         assert!(ini.contains("TYPENR=14")); // Heil- und Kostenplan
         assert!(ini.contains("TYPE=Heil- und Kostenplan"));
         assert!(ini.contains("EXT=PDF"));
     }
 
-    // Die Kaskade über echte Prozessaufrufe testen wir mit /bin/true|false (Unix).
+    // Die Kaskade über echte Prozessaufrufe testen wir mit /usr/bin/true|false
+    // (existiert auf macOS und Linux; /bin/true fehlt auf modernem macOS).
     #[cfg(unix)]
     fn dummy_pdf() -> PathBuf {
         let p = std::env::temp_dir().join("praxishub_test_doc.pdf");
@@ -472,7 +592,7 @@ mod tests {
         let pdf = dummy_pdf();
         let patient = patient_full();
         let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Anamnese };
-        let out = file_document(Path::new("/bin/true"), &req, &std::env::temp_dir()).unwrap();
+        let out = file_document(Path::new("/usr/bin/true"), &req, &std::env::temp_dir(), "t-ok").unwrap();
         assert_eq!(out, FilingOutcome::Filed { matched_by: "patient_id" });
     }
 
@@ -480,9 +600,9 @@ mod tests {
     #[cfg(unix)]
     fn kaskade_deferred_wenn_programm_immer_ablehnt() {
         let pdf = dummy_pdf();
-        let patient = patient_full(); // PATID + Name/DOB → beide Versuche scheitern an /bin/false
+        let patient = patient_full(); // PATID + Name/DOB → beide Versuche scheitern an /usr/bin/false
         let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Anamnese };
-        let out = file_document(Path::new("/bin/false"), &req, &std::env::temp_dir()).unwrap();
+        let out = file_document(Path::new("/usr/bin/false"), &req, &std::env::temp_dir(), "t-def").unwrap();
         assert!(matches!(out, FilingOutcome::Deferred(_)));
     }
 
@@ -491,6 +611,66 @@ mod tests {
         let patient = patient_full();
         let missing = PathBuf::from("/pfad/gibtsnicht-12345.pdf");
         let req = ImportRequest { patient: &patient, pdf_path: &missing, kind: DocumentKind::Anamnese };
-        assert!(file_document(Path::new("/bin/true"), &req, &std::env::temp_dir()).is_err());
+        assert!(file_document(Path::new("/usr/bin/true"), &req, &std::env::temp_dir(), "t-err").is_err());
+    }
+
+    #[test]
+    fn export_request_wird_erkannt() {
+        let dir = std::env::temp_dir().join("praxishub_test_export_detect");
+        std::fs::create_dir_all(&dir).unwrap();
+        let req_ini = dir.join("export_req.ini");
+        std::fs::write(&req_ini, b"[MMOIDS]\r\nPVS=CDP_Z1\r\nCOUNT=1\r\nMMOID1=abc\r\nREADY=0\r\n").unwrap();
+        assert!(is_export_request(&req_ini));
+
+        let pat_ini = dir.join("pat.ini");
+        std::fs::write(&pat_ini, b"[PATID]\r\nPATID=4711\r\n").unwrap();
+        assert!(!is_export_request(&pat_ini));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_loest_vorhandene_mmoid_auf_und_meldet_fehlende() {
+        let dir = std::env::temp_dir().join("praxishub_test_export_handle");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Eine bereitgelegte Dokumentkopie (wie sie der Push stagen würde).
+        std::fs::write(dir.join(mmo_pdf_name("DOC1")), b"%PDF-1.4 test").unwrap();
+
+        let req_ini = dir.join("export_req.ini");
+        std::fs::write(
+            &req_ini,
+            b"[MMOIDS]\r\nPVS=CDP_Z1\r\nCOUNT=2\r\nMMOID1=DOC1\r\nMMOID2=FEHLT\r\nREADY=0\r\n",
+        )
+        .unwrap();
+
+        let out = handle_export_request(&req_ini, &dir).unwrap();
+        assert_eq!(out.resolved, 1);
+        assert_eq!(out.missing, vec!["FEHLT".to_string()]);
+
+        let after = std::fs::read(&req_ini).unwrap();
+        let (text, _, _) = WINDOWS_1252.decode(&after);
+        assert!(text.contains("[MMOPATH]"));
+        assert!(text.contains(&format!("MMOID1={}", dir.join(mmo_pdf_name("DOC1")).to_string_lossy())));
+        assert!(text.contains("READY=1"));
+        assert!(text.contains("ERRORLEVEL=1")); // weil MMOID2 fehlt
+        assert!(text.contains("ERRORTEXT="));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_alle_vorhanden_meldet_errorlevel_null() {
+        let dir = std::env::temp_dir().join("praxishub_test_export_ok");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(mmo_pdf_name("DOCX")), b"%PDF-1.4 test").unwrap();
+        let req_ini = dir.join("export_req.ini");
+        std::fs::write(&req_ini, b"[MMOIDS]\r\nCOUNT=1\r\nMMOID1=DOCX\r\nREADY=0\r\n").unwrap();
+
+        let out = handle_export_request(&req_ini, &dir).unwrap();
+        assert_eq!(out.resolved, 1);
+        assert!(out.missing.is_empty());
+        let after = std::fs::read(&req_ini).unwrap();
+        let (text, _, _) = WINDOWS_1252.decode(&after);
+        assert!(text.contains("ERRORLEVEL=0"));
+        assert!(text.contains("READY=1"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

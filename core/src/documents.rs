@@ -160,7 +160,11 @@ async fn file_one(
     let pdf_bytes = STANDARD
         .decode(doc.pdf_base64.as_bytes())
         .map_err(|e| crate::error::ConnectorError::Vdds(format!("PDF Base64 ungültig: {e}")))?;
-    let pdf_path = exchange_dir.join(format!("praxishub_{}.pdf", sanitize(&doc.id)));
+    // MMOID = stabile, dateinamen-sichere Dokument-ID. Die Kopie wird unter dem
+    // kanonischen Namen (media::mmo_pdf_name) im Austauschordner abgelegt, damit
+    // ConVis sie nach dem Push per MMOEXPORT (Pull) genau darüber abholen kann.
+    let mmoid = sanitize(&doc.id);
+    let pdf_path = exchange_dir.join(media::mmo_pdf_name(&mmoid));
     std::fs::create_dir_all(exchange_dir)?;
     std::fs::write(&pdf_path, &pdf_bytes)?;
 
@@ -176,10 +180,10 @@ async fn file_one(
         kind: DocumentKind::from_tag(&doc.kind),
     };
 
-    let outcome = media::file_document(import_program, &req, exchange_dir);
-    // Temporäres PDF immer wieder aufräumen (Erfolg wie Aufschub).
-    let _ = std::fs::remove_file(&pdf_path);
-    let outcome = outcome?;
+    // Die Dokumentkopie bewusst NICHT sofort löschen: ConVis holt sie erst per
+    // MMOEXPORT ab (synchron während des Pushs oder später beim Aufruf der Akte)
+    // und ist laut VDDS-Spec danach selbst fürs Löschen der Kopie verantwortlich.
+    let outcome = media::file_document(import_program, &req, exchange_dir, &mmoid)?;
 
     if let FilingOutcome::Filed { matched_by } = &outcome {
         // Bei Name/Geburtsdatum-Match haben wir keine bestätigte Z1-PATID → leer.
