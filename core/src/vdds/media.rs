@@ -78,8 +78,10 @@ pub struct ImportRequest<'a> {
 /// Ergebnis eines Ablage-Versuchs.
 #[derive(Debug, PartialEq, Eq)]
 pub enum FilingOutcome {
-    /// PDF wurde an den PVS übergeben (Push erfolgreich).
-    Filed,
+    /// PDF wurde an den PVS übergeben (Push erfolgreich). `matched_by` hält fest,
+    /// WIE der Patient getroffen wurde ("patient_id" | "name_dob") — die Cloud
+    /// quittiert damit „für genau diesen Patienten".
+    Filed { matched_by: &'static str },
     /// Unbeaufsichtigte Ablage (PATID + Name/Geburtsdatum) nicht möglich — das
     /// Dokument bleibt offen für Variante A (Ablage beim nächsten Z1-Aufruf).
     Deferred(String),
@@ -147,7 +149,7 @@ pub fn file_document(
     // 1) PATID-Versuch (eindeutig, unbeaufsichtigt).
     if req.patient.has_patid() && run_import(import_program, req, exchange_dir)? {
         tracing::info!(patid = %req.patient.patient_id, "VDDS-media: Dokument per PATID abgelegt");
-        return Ok(FilingOutcome::Filed);
+        return Ok(FilingOutcome::Filed { matched_by: "patient_id" });
     }
 
     // 2) Name/Geburtsdatum-Fallback (PATID bewusst weggelassen → erzwingt Match).
@@ -166,7 +168,7 @@ pub fn file_document(
                 name = %req.patient.last_name,
                 "VDDS-media: Dokument per Name/Geburtsdatum abgelegt"
             );
-            return Ok(FilingOutcome::Filed);
+            return Ok(FilingOutcome::Filed { matched_by: "name_dob" });
         }
     }
 
@@ -286,7 +288,7 @@ mod tests {
         let patient = patient_full();
         let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Anamnese };
         let out = file_document(Path::new("/bin/true"), &req, &std::env::temp_dir()).unwrap();
-        assert_eq!(out, FilingOutcome::Filed);
+        assert_eq!(out, FilingOutcome::Filed { matched_by: "patient_id" });
     }
 
     #[test]

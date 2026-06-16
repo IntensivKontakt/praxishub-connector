@@ -121,7 +121,7 @@ fn run_push_test(args: &[String]) -> i32 {
     let req = media::ImportRequest { patient: &patient, pdf_path: &pdf_path, kind };
 
     match media::file_document(&import_program, &req, &cfg.exchange_dir_path()) {
-        Ok(media::FilingOutcome::Filed) => {
+        Ok(media::FilingOutcome::Filed { .. }) => {
             report(&format!(
                 "OK: Z1 hat das PDF angenommen (MMOINFIMPORT={}). \
                  Jetzt in Z1 beim Patienten im Archiv prüfen, ob es sichtbar ist.",

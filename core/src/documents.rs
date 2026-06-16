@@ -89,12 +89,18 @@ pub async fn file_pending(cfg: &ConnectorConfig) -> Result<(usize, usize)> {
     let (mut filed, mut deferred) = (0usize, 0usize);
     for doc in docs {
         match file_one(&import_program, &exchange_dir, &cloud, &doc, None).await {
-            Ok(FilingOutcome::Filed) => filed += 1,
+            Ok(FilingOutcome::Filed { .. }) => filed += 1,
             Ok(FilingOutcome::Deferred(reason)) => {
+                // Offen lassen (Variante A legt es ab, sobald Z1 den Patienten öffnet);
+                // NICHT als failed melden, sonst verpasst Variante A das Dokument.
                 debug!(id = %doc.id, %reason, "Dokument zurückgestellt (Variante A folgt)");
                 deferred += 1;
             }
-            Err(e) => warn!(id = %doc.id, error = %e, "Dokument-Ablage fehlgeschlagen"),
+            Err(e) => {
+                // Echter Importfehler → der Cloud melden (Backoff/„nicht zugeordnet").
+                warn!(id = %doc.id, error = %e, "Dokument-Ablage fehlgeschlagen");
+                let _ = cloud.ack_document_failed(&doc.id, &e.to_string()).await;
+            }
         }
     }
     if filed > 0 {
@@ -129,7 +135,7 @@ pub async fn file_pending_for_patient(
             None
         };
         match file_one(&import_program, &exchange_dir, &cloud, &doc, patid).await {
-            Ok(FilingOutcome::Filed) => filed += 1,
+            Ok(FilingOutcome::Filed { .. }) => filed += 1,
             Ok(FilingOutcome::Deferred(reason)) => {
                 debug!(id = %doc.id, %reason, "Variante A: weiterhin offen")
             }
@@ -175,8 +181,10 @@ async fn file_one(
     let _ = std::fs::remove_file(&pdf_path);
     let outcome = outcome?;
 
-    if matches!(outcome, FilingOutcome::Filed) {
-        cloud.ack_document_filed(&doc.id).await?;
+    if let FilingOutcome::Filed { matched_by } = &outcome {
+        // Bei Name/Geburtsdatum-Match haben wir keine bestätigte Z1-PATID → leer.
+        let patid = if *matched_by == "patient_id" { patient.patient_id.as_str() } else { "" };
+        cloud.ack_document_filed(&doc.id, patid, matched_by).await?;
     }
     Ok(outcome)
 }

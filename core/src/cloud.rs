@@ -62,6 +62,17 @@ pub struct PendingDocument {
 }
 
 #[derive(Debug, Serialize)]
+struct FiledBody<'a> {
+    patient_id: &'a str,
+    matched_by: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct FailedBody<'a> {
+    reason: &'a str,
+}
+
+#[derive(Debug, Serialize)]
 struct Heartbeat<'a> {
     version: &'a str,
     vdds_registered: bool,
@@ -158,10 +169,31 @@ impl CloudClient {
             .map_err(|e| ConnectorError::Http(e.to_string()))
     }
 
-    /// Quittiert ein abgelegtes Dokument; das Backend nimmt es aus „pending".
-    /// **Backend-Vertrag offen:** `POST /api/v1/connector/documents/{id}/filed`.
-    pub async fn ack_document_filed(&self, id: &str) -> Result<()> {
+    /// Quittiert einen erfolgreichen Z1-Import; das Backend nimmt das Dokument aus
+    /// „pending" und hält die getroffene Z1-PATID fest („für genau diesen Patienten").
+    /// `patient_id` = getroffene PATID (leer beim Name/Geburtsdatum-Match),
+    /// `matched_by` = "patient_id" | "name_dob".
+    pub async fn ack_document_filed(
+        &self,
+        id: &str,
+        patient_id: &str,
+        matched_by: &str,
+    ) -> Result<()> {
         self.auth(self.http.post(self.url(&format!("documents/{id}/filed"))))
+            .json(&FiledBody { patient_id, matched_by })
+            .send()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| ConnectorError::Http(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Meldet, dass der Z1-Import NICHT möglich war (mit Grund). Das Backend
+    /// wiederholt mit Backoff und markiert das Dokument irgendwann als „failed".
+    pub async fn ack_document_failed(&self, id: &str, reason: &str) -> Result<()> {
+        self.auth(self.http.post(self.url(&format!("documents/{id}/failed"))))
+            .json(&FailedBody { reason })
             .send()
             .await
             .map_err(|e| ConnectorError::Http(e.to_string()))?
