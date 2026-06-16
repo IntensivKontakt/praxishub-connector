@@ -7,8 +7,10 @@
 //! Die Datei ist **Windows-1252**-kodiert und liegt traditionell im Windows-
 //! Verzeichnis (`%WINDIR%\VDDS_MMI.INI`); Pfad per Env `VDDS_INI` überschreibbar.
 //!
-//! ⚠️ Schema unten ist eine fundierte Annäherung — gegen Spec + echte Z1-INI
-//! verifizieren (PRA-15, Prüfpunkt 1: „Wird unser Modul sauber aufgerufen?").
+//! Schema unten ist an einer **echten Z1.PRO/CGM-`VDDS_MMI.INI`** (Pilot, PRA-15
+//! Prüfpunkt 1) ausgerichtet: BVS-Module werden im `[BVS]`-Index über `NAMEn`
+//! gelistet, die Modul-Sektion trägt `PATDATIMPORT` (vom PVS mit Patientenkontext
+//! aufgerufenes Programm), `STAGES` und `VERSION` (VDDS-media-Schnittstellenversion).
 
 use crate::error::Result;
 use encoding_rs::WINDOWS_1252;
@@ -16,8 +18,12 @@ use std::path::{Path, PathBuf};
 
 /// Abschnittsname unseres Moduls (freie Namen-ID).
 pub const SECTION: &str = "PRAXISHUB";
-/// Index-Abschnitt, der alle teilnehmenden Systeme auflistet.
-const SYSTEMS: &str = "SYSTEMS";
+/// Index-Abschnitt, in dem Z1 alle teilnehmenden BVS-Module listet (`NAME1`, `NAME2`, …).
+const BVS_INDEX: &str = "BVS";
+/// VDDS-media-Schnittstellenversion, die wir registrieren (so steht es real in der Z1-INI).
+const VDDS_VERSION: &str = "1.3";
+/// Unterstützte media-Stufen: 1 (Basis) + 6 (BVS→PVS-Push, Auto-Import via `MMOINFIMPORT`).
+const STAGES: &str = "16";
 
 pub struct VddsRegistration {
     /// Vollpfad zur ausführbaren Media-Handler-.exe (vom PVS aufgerufen).
@@ -84,24 +90,26 @@ pub fn is_registered(ini_path: &Path) -> Result<bool> {
 // ── reine In-Memory-Logik (unit-testbar) ─────────────────────────────────────
 
 pub fn register_in(ini: &mut Ini, reg: &VddsRegistration) {
-    // Im [SYSTEMS]-Index registrieren (nächste freie Nummer), falls noch nicht da.
-    if ini.systems_index_of(SECTION).is_none() {
-        let next = ini.next_systems_index();
-        ini.set(SYSTEMS, &next.to_string(), SECTION);
+    // Im [BVS]-Index unter der nächsten freien NAMEn-Nummer registrieren, falls
+    // noch nicht da (Z1 listet BVS-Module so: NAME1=…, NAME2=…).
+    if ini.bvs_index_of(SECTION).is_none() {
+        let next = ini.next_bvs_index();
+        ini.set(BVS_INDEX, &format!("NAME{next}"), SECTION);
     }
     let prog = reg.program_path.to_string_lossy();
     let dir = reg.install_dir.to_string_lossy();
-    ini.set(SECTION, "Name", "Praxishub Connector");
-    ini.set(SECTION, "Programm", &prog);
-    ini.set(SECTION, "Pfad", &dir);
-    ini.set(SECTION, "BVS", "1");
-    ini.set(SECTION, "PVS", "0");
-    ini.set(SECTION, "MMOID", SECTION);
-    ini.set(SECTION, "Version", env!("CARGO_PKG_VERSION"));
+    ini.set(SECTION, "NAME", "Praxishub Connector");
+    // Programm, das der PVS mit dem Patientenkontext (Austausch-INI) aufruft.
+    ini.set(SECTION, "PATDATIMPORT", &prog);
+    ini.set(SECTION, "PATDATIMPORT_OS", "1");
+    ini.set(SECTION, "PATDATIMPORT_EVENT", "");
+    ini.set(SECTION, "PFAD", &dir);
+    ini.set(SECTION, "STAGES", STAGES);
+    ini.set(SECTION, "VERSION", VDDS_VERSION);
 }
 
 pub fn unregister_in(ini: &mut Ini) {
-    ini.remove_systems_index(SECTION);
+    ini.remove_bvs_index(SECTION);
     ini.remove_section(SECTION);
 }
 
@@ -192,23 +200,23 @@ impl Ini {
         self.sections.len() != before
     }
 
-    /// Numerischer Schlüssel im [SYSTEMS]-Index, dessen Wert == `value`.
-    fn systems_index_of(&self, value: &str) -> Option<u32> {
-        let sec = self.sections.iter().find(|s| s.name.eq_ignore_ascii_case(SYSTEMS))?;
+    /// NAMEn-Nummer im [BVS]-Index, deren Wert == `value` (z. B. `NAME3=PRAXISHUB` → 3).
+    fn bvs_index_of(&self, value: &str) -> Option<u32> {
+        let sec = self.sections.iter().find(|s| s.name.eq_ignore_ascii_case(BVS_INDEX))?;
         sec.entries
             .iter()
             .find(|(_, v)| v.eq_ignore_ascii_case(value))
-            .and_then(|(k, _)| k.parse().ok())
+            .and_then(|(k, _)| bvs_name_number(k))
     }
 
-    fn next_systems_index(&self) -> u32 {
+    fn next_bvs_index(&self) -> u32 {
         self.sections
             .iter()
-            .find(|s| s.name.eq_ignore_ascii_case(SYSTEMS))
+            .find(|s| s.name.eq_ignore_ascii_case(BVS_INDEX))
             .map(|sec| {
                 sec.entries
                     .iter()
-                    .filter_map(|(k, _)| k.parse::<u32>().ok())
+                    .filter_map(|(k, _)| bvs_name_number(k))
                     .max()
                     .map(|m| m + 1)
                     .unwrap_or(1)
@@ -216,11 +224,17 @@ impl Ini {
             .unwrap_or(1)
     }
 
-    fn remove_systems_index(&mut self, value: &str) {
-        if let Some(sec) = self.sections.iter_mut().find(|s| s.name.eq_ignore_ascii_case(SYSTEMS)) {
+    fn remove_bvs_index(&mut self, value: &str) {
+        if let Some(sec) = self.sections.iter_mut().find(|s| s.name.eq_ignore_ascii_case(BVS_INDEX)) {
             sec.entries.retain(|(_, v)| !v.eq_ignore_ascii_case(value));
         }
     }
+}
+
+/// Parst einen `[BVS]`-Index-Schlüssel wie `NAME3` zur Nummer `3`. Andere
+/// Schlüssel (z. B. `ARCHIV`) liefern `None` und werden so ignoriert.
+fn bvs_name_number(key: &str) -> Option<u32> {
+    key.to_ascii_uppercase().strip_prefix("NAME").and_then(|n| n.parse().ok())
 }
 
 #[cfg(test)]
@@ -236,19 +250,32 @@ mod tests {
 
     #[test]
     fn roundtrip_erhaelt_eintraege() {
-        let text = "[SYSTEMS]\r\n1=FOO\r\n[FOO]\r\nName=Foo\r\n";
+        let text = "[BVS]\r\nNAME1=FOO\r\n[FOO]\r\nNAME=Foo\r\n";
         let ini = Ini::parse(text);
-        assert_eq!(ini.get("FOO", "Name"), Some("Foo"));
-        assert_eq!(ini.get("SYSTEMS", "1"), Some("FOO"));
+        assert_eq!(ini.get("FOO", "NAME"), Some("Foo"));
+        assert_eq!(ini.get("BVS", "NAME1"), Some("FOO"));
     }
 
     #[test]
     fn register_fuegt_index_und_section_hinzu() {
-        let mut ini = Ini::parse("[SYSTEMS]\r\n1=FOO\r\n[FOO]\r\nName=Foo\r\n");
+        // Vorhandene BVS-Module wie in einer echten Z1-INI.
+        let mut ini = Ini::parse("[BVS]\r\nARCHIV=BVS_ARCHIV\r\nNAME1=FOO\r\nNAME2=BAR\r\n");
         register_in(&mut ini, &reg());
         assert!(ini.has_section(SECTION));
-        assert_eq!(ini.get(SECTION, "BVS"), Some("1"));
-        assert_eq!(ini.systems_index_of(SECTION), Some(2)); // nächste freie Nummer
+        // Registriert sich im [BVS]-Index unter der nächsten freien NAMEn-Nummer.
+        assert_eq!(ini.bvs_index_of(SECTION), Some(3));
+        assert_eq!(ini.get("BVS", "NAME3"), Some(SECTION));
+        // Modul-Sektion trägt das vom PVS aufgerufene Programm + Stufen/Version.
+        assert_eq!(ini.get(SECTION, "PATDATIMPORT"), Some("C:\\Apps\\praxishub-connector.exe"));
+        assert_eq!(ini.get(SECTION, "STAGES"), Some("16"));
+        assert_eq!(ini.get(SECTION, "VERSION"), Some("1.3"));
+    }
+
+    #[test]
+    fn register_ohne_bvs_index_startet_bei_name1() {
+        let mut ini = Ini::default();
+        register_in(&mut ini, &reg());
+        assert_eq!(ini.get("BVS", "NAME1"), Some(SECTION));
     }
 
     #[test]
@@ -260,7 +287,7 @@ mod tests {
         let count = Ini::parse(&ini.to_text())
             .sections
             .iter()
-            .find(|s| s.name == SYSTEMS)
+            .find(|s| s.name == BVS_INDEX)
             .map(|s| s.entries.iter().filter(|(_, v)| v == SECTION).count())
             .unwrap_or(0);
         assert_eq!(count, 1);
@@ -272,7 +299,7 @@ mod tests {
         register_in(&mut ini, &reg());
         unregister_in(&mut ini);
         assert!(!ini.has_section(SECTION));
-        assert_eq!(ini.systems_index_of(SECTION), None);
+        assert_eq!(ini.bvs_index_of(SECTION), None);
     }
 
     #[test]
