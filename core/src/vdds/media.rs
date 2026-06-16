@@ -29,7 +29,9 @@ pub struct PatientContext {
     pub patient_id: String,
     pub last_name: String,
     pub first_name: String,
-    /// Geburtsdatum `TT.MM.JJJJ`.
+    /// Geburtsdatum. VDDS-media liefert es als `CCYYMMDD` (z. B. `19800101`,
+    /// Tabelle 3 `BIRTHDAY=`). Für MMOINFIMPORT irrelevant (Match über PATID);
+    /// nur fürs Dokument-Matching gegen die Cloud — dort muss das Format passen.
     pub birth_date: String,
 }
 
@@ -111,11 +113,18 @@ impl VddsTarget {
         let bytes = std::fs::read(ini::default_ini_path()).unwrap_or_default();
         let (text, _, _) = WINDOWS_1252.decode(&bytes);
         let mmi = ini::Ini::parse(&text);
-        let archive = mmi.get("PVS", "ARCHIV").unwrap_or("").trim().to_string();
-        let pvs_name = mmi.get("PVS", "NAME1").unwrap_or("").trim().to_string();
+        // Der registrierte PVS-Sektionsname (`[PVS] NAME1`, z. B. `CDP_Z1`) — NICHT
+        // die Archiv-Sektion. Fällt NAME1 weg, ersatzweise die Archiv-Sektion.
+        let pvs_name = mmi
+            .get("PVS", "NAME1")
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| mmi.get("PVS", "ARCHIV"))
+            .unwrap_or("")
+            .trim()
+            .to_string();
         VddsTarget {
-            // Empfänger ist das Archiv-Modul (MMOINFIMPORT); fällt es weg, die PVS selbst.
-            pvs_section: if archive.is_empty() { pvs_name.clone() } else { archive },
+            // PVS=/FROMPVS= = dieselbe (patientenführende) PVS bei Ein-PVS-Praxen.
+            pvs_section: pvs_name.clone(),
             from_pvs_section: pvs_name,
             bvs_section: ini::SECTION.to_string(),
             prxnr: "1".to_string(),
@@ -140,9 +149,9 @@ pub fn build_mmo_ini(req: &ImportRequest, target: &VddsTarget) -> String {
     s.push_str(&format!("BVS={}\r\n", target.bvs_section));
     s.push_str(&format!("FROMPVS={}\r\n", target.from_pvs_section));
     s.push_str(&format!("PRXNR={}\r\n", target.prxnr));
+    // Tabelle 5 kennt im MMOINFIMPORT-File KEINE Namensfelder — Zuordnung rein
+    // über die PATID (der Name/Geburtsdatum-Weg ist hier prinzipiell nicht möglich).
     s.push_str(&format!("PATID={}\r\n", p.patient_id.trim()));
-    s.push_str(&format!("LASTNAME={}\r\n", p.last_name));
-    s.push_str(&format!("FIRSTNAME={}\r\n", p.first_name));
     s.push_str("ERRORLEVEL=0\r\n");
     s.push_str("READY=0\r\n");
     // Objektliste (Tabelle 6).
@@ -224,6 +233,8 @@ pub struct ImportDiagnostics {
     pub ready: Option<String>,
     /// `ERRORLEVEL`-Wert aus der zurückgelesenen INI (egal in welcher Sektion).
     pub errorlevel: Option<String>,
+    /// `ERRORTEXT`/`ERROR-TEXT` — Klartext-Fehlergrund, den das PVS zurückschreibt.
+    pub errortext: Option<String>,
     /// Die INI, die wir an `MmoInfIm` übergeben haben.
     pub sent_ini: String,
     /// Inhalt der Austausch-INI NACH dem Aufruf (zeigt die Antwort von `MmoInfIm`).
@@ -265,6 +276,7 @@ pub fn import_once_diagnostic(
     };
     let ready = field("READY");
     let errorlevel = field("ERRORLEVEL");
+    let errortext = field("ERRORTEXT").or_else(|| field("ERROR-TEXT"));
     let exchange_files = std::fs::read_dir(exchange_dir)
         .map(|rd| {
             rd.filter_map(|e| e.ok())
@@ -281,6 +293,7 @@ pub fn import_once_diagnostic(
         exit_success: status.success(),
         ready,
         errorlevel,
+        errortext,
         sent_ini,
         ini_after,
         exchange_files,
@@ -303,35 +316,16 @@ pub fn file_document(
         )));
     }
 
-    // 1) PATID-Versuch (eindeutig, unbeaufsichtigt).
+    // MMOINFIMPORT ordnet AUSSCHLIESSLICH über die PATID zu — Tabelle 5 kennt keinen
+    // Namens-/Geburtsdatum-Match. Greift die PATID nicht, bleibt nur Variante A.
     if req.patient.has_patid() && run_import(import_program, req, exchange_dir)? {
         tracing::info!(patid = %req.patient.patient_id, "VDDS-media: Dokument per PATID abgelegt");
         return Ok(FilingOutcome::Filed { matched_by: "patient_id" });
     }
 
-    // 2) Name/Geburtsdatum-Fallback (PATID bewusst weggelassen → erzwingt Match).
-    if req.patient.has_name_and_dob() {
-        let by_name = PatientContext {
-            patient_id: String::new(),
-            ..req.patient.clone()
-        };
-        let req2 = ImportRequest {
-            patient: &by_name,
-            pdf_path: req.pdf_path,
-            kind: req.kind,
-        };
-        if run_import(import_program, &req2, exchange_dir)? {
-            tracing::info!(
-                name = %req.patient.last_name,
-                "VDDS-media: Dokument per Name/Geburtsdatum abgelegt"
-            );
-            return Ok(FilingOutcome::Filed { matched_by: "name_dob" });
-        }
-    }
-
-    // 3) Variante A: offen lassen, bis Z1 den Patienten öffnet.
+    // Variante A: offen lassen, bis Z1 den Patienten öffnet und uns die PATID übergibt.
     Ok(FilingOutcome::Deferred(
-        "unbeaufsichtigte Ablage nicht möglich – wartet auf Z1-Patientenkontext".into(),
+        "PATID greift (noch) nicht – wartet auf Z1-Patientenkontext (Variante A)".into(),
     ))
 }
 
@@ -418,7 +412,7 @@ mod tests {
 
     fn test_target() -> VddsTarget {
         VddsTarget {
-            pvs_section: "PVS_ARCHIV".into(),
+            pvs_section: "CDP_Z1".into(),
             from_pvs_section: "CDP_Z1".into(),
             bvs_section: "PRAXISHUB".into(),
             prxnr: "1".into(),
@@ -431,14 +425,12 @@ mod tests {
         let pdf = PathBuf::from("C:\\tmp\\anamnese.pdf");
         let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Anamnese };
         let ini = build_mmo_ini(&req, &test_target());
-        // Kopf-/Patientensektion mit englischen Pflichtfeldern.
-        assert!(ini.contains("[PATID]"));
+        // Kopfsektion: Zuordnung NUR über PATID, mit PVS/BVS/FROMPVS/PRXNR.
+        assert!(ini.contains("[PATID]\r\nPVS=CDP_Z1\r\n"));
         assert!(ini.contains("PATID=4711"));
-        assert!(ini.contains("LASTNAME=Mustermann"));
-        assert!(ini.contains("FIRSTNAME=Erika"));
-        assert!(ini.contains("PVS=PVS_ARCHIV"));
         assert!(ini.contains("BVS=PRAXISHUB"));
         assert!(ini.contains("FROMPVS=CDP_Z1"));
+        assert!(ini.contains("PRXNR=1"));
         // Objektsektion mit direkter Dateiübergabe.
         assert!(ini.contains("[MMOS]"));
         assert!(ini.contains("COUNT=1"));
@@ -447,7 +439,9 @@ mod tests {
         assert!(ini.contains("EXT=PDF"));
         assert!(ini.contains("COLORTYPE=LINEART"));
         assert!(ini.contains("IMAGEDATA=C:\\tmp\\anamnese.pdf"));
-        // Alte (falsche) Schlüssel dürfen NICHT mehr vorkommen.
+        // Tabelle 5 hat KEINE Namensfelder, und alte (falsche) Schlüssel sind weg.
+        assert!(!ini.contains("LASTNAME"));
+        assert!(!ini.contains("FIRSTNAME"));
         assert!(!ini.contains("KATEGORIE"));
         assert!(!ini.contains("DATEI="));
         assert!(!ini.contains("GEBDATUM"));

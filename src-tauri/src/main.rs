@@ -138,7 +138,8 @@ fn run_push_test(args: &[String]) -> i32 {
                  MMOINFIMPORT : {prog}\n\
                  Exit-Code    : {code:?} (success={succ})\n\
                  READY        : {ready}\n\
-                 ERRORLEVEL   : {el}\n\n\
+                 ERRORLEVEL   : {el}\n\
+                 ERRORTEXT    : {etext}\n\n\
                  Dateien im Austauschordner nach dem Aufruf:\n{files}\n\n\
                  ===== Gesendete VDDS_MMO.INI =====\n{sent}\n\
                  ===== VDDS_MMO.INI NACH dem Aufruf (Antwort von MmoInfIm) =====\n{after}",
@@ -147,6 +148,7 @@ fn run_push_test(args: &[String]) -> i32 {
                 succ = d.exit_success,
                 ready = d.ready.as_deref().unwrap_or("(keins)"),
                 el = d.errorlevel.as_deref().unwrap_or("(keins)"),
+                etext = d.errortext.as_deref().unwrap_or("(keiner)"),
                 files = if d.exchange_files.is_empty() {
                     "(keine)".to_string()
                 } else {
