@@ -20,6 +20,9 @@ fn default_kim_port() -> u16 {
 fn default_poll() -> u64 {
     60
 }
+fn default_doc_poll() -> u64 {
+    60
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectorConfig {
@@ -41,6 +44,12 @@ pub struct ConnectorConfig {
     pub kim_password: String,
     #[serde(default = "default_poll")]
     pub kim_poll_seconds: u64,
+
+    /// Poll-Intervall des **Dokumenten-Push** (Variante B). Eigenständig, weil
+    /// dieser Weg NICHT vom KIM-Postfach abhängt — er läuft auch, wenn KIM gerade
+    /// nicht erreichbar ist.
+    #[serde(default = "default_doc_poll")]
+    pub doc_poll_seconds: u64,
 
     /// KIM-Clientmodule am localhost präsentieren oft selbstsignierte Zertifikate.
     #[serde(default = "default_true")]
@@ -68,6 +77,7 @@ impl Default for ConnectorConfig {
             kim_user: String::new(),
             kim_password: String::new(),
             kim_poll_seconds: default_poll(),
+            doc_poll_seconds: default_doc_poll(),
             kim_allow_invalid_cert: true,
             exchange_dir: String::new(),
         }

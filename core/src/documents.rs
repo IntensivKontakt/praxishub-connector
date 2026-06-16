@@ -3,9 +3,11 @@
 //! [`crate::vdds::media`] (PATID → Name/Geburtsdatum → Variante A).
 //!
 //! Zwei Auslöser:
-//!   * **Variante B (unbeaufsichtigt):** der KIM-Watcher ruft pro Zyklus
-//!     [`file_pending`] — Dokumente mit bekannter PATID (~90 %) bzw. eindeutigem
-//!     Name/Geburtsdatum landen sofort in der Akte, ohne Klick in Z1.
+//!   * **Variante B (unbeaufsichtigt):** eine **eigenständige** Schleife
+//!     ([`spawn`]) ruft pro Zyklus [`file_pending`] — Dokumente mit bekannter
+//!     PATID (~90 %) bzw. eindeutigem Name/Geburtsdatum landen sofort in der
+//!     Akte, ohne Klick in Z1. Bewusst **vom KIM-Watcher entkoppelt**: der Push
+//!     braucht nur Cloud + importfähiges Z1, kein erreichbares KIM-Postfach.
 //!   * **Variante A (Z1-getriggert):** öffnet das Team in Z1 einen Patienten und
 //!     ruft unser BVS-Modul auf, übergibt Z1 uns die echte PATID; dann legt
 //!     [`file_pending_for_patient`] genau dessen offene Dokumente ab.
@@ -20,7 +22,57 @@ use crate::vdds::ini;
 use crate::vdds::media::{self, DocumentKind, FilingOutcome, ImportRequest, PatientContext};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use std::path::Path;
+use std::time::Duration;
 use tracing::{debug, info, warn};
+
+/// Laufender Hintergrund-Task des Dokumenten-Push (Variante B).
+pub struct DocWatcherHandle {
+    shutdown: tokio::sync::watch::Sender<bool>,
+    join: tokio::task::JoinHandle<()>,
+}
+
+impl DocWatcherHandle {
+    /// Signalisiert Stopp und wartet auf das saubere Ende der Schleife.
+    pub async fn stop(self) {
+        let _ = self.shutdown.send(true);
+        let _ = self.join.await;
+    }
+}
+
+/// Startet die unbeaufsichtigte Dokumenten-Ablage als **eigenständige** Schleife.
+///
+/// Bewusst **entkoppelt vom KIM-Watcher**: Der Anamnese-/HKP-Push in die Z1-Akte
+/// braucht nur die Cloud + ein importfähiges Z1 (`MMOINFIMPORT`), aber **kein**
+/// erreichbares KIM-Postfach. So läuft die Dokumentenablage weiter, während KIM
+/// gerade nicht geht (häufiger Fall) — und umgekehrt.
+pub fn spawn(cfg: ConnectorConfig) -> DocWatcherHandle {
+    let (tx, mut rx) = tokio::sync::watch::channel(false);
+    let join = tokio::spawn(async move {
+        let period = Duration::from_secs(cfg.doc_poll_seconds.max(10));
+        let mut ticker = tokio::time::interval(period);
+        info!(period_s = period.as_secs(), "Dokumenten-Push-Schleife gestartet (unabhängig von KIM)");
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    match file_pending(&cfg).await {
+                        Ok((filed, deferred)) if filed > 0 || deferred > 0 => {
+                            debug!(filed, deferred, "Dokumenten-Push-Zyklus");
+                        }
+                        Ok(_) => {}
+                        Err(e) => debug!(error = %e, "Dokumenten-Push-Zyklus fehlgeschlagen"),
+                    }
+                }
+                _ = rx.changed() => {
+                    if *rx.borrow() {
+                        info!("Dokumenten-Push-Schleife gestoppt");
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    DocWatcherHandle { shutdown: tx, join }
+}
 
 /// Variante B: alle anstehenden Dokumente unbeaufsichtigt ablegen.
 /// Gibt `(abgelegt, zurückgestellt)` zurück. Ist Z1 (noch) nicht
