@@ -7,8 +7,6 @@ Eine Windows-Komponente, drei Use-Cases:
 2. **HKP-Dokumente** am Patienten ablegen/abrufen (VDDS-media)
 3. **HKP-Erkennung** — genehmigte HKPs aus KIM/EBZ erkennen → Auto-Einbestellung
 
-Spezifikation & Hintergrund: **Linear PRA-15**.
-
 ## Architektur
 
 Workspace aus zwei Rust-Crates + Vanilla-TS-UI:
@@ -42,10 +40,6 @@ Gerüst steht, Frontend baut, der Logik-Kern ist unit-getestet
 (`cargo test -p praxishub-connector-core` → 12 grün). Code-Signing-Pipeline
 (Azure Trusted Signing via OIDC) ist eingerichtet — siehe
 [`docs/SIGNING.md`](docs/SIGNING.md).
-
-**Am Z1-Pilot zu verifizieren (PRA-15):** VDDS-INI-Schema, PDF-Dokumentenablage,
-echtes EBZ-`.p7s`-Sample, Per-User-vs-Admin am realen Setup. Siehe Code-Kommentare
-mit `verifizieren`/`TODO`.
 
 ## Entwicklung
 
@@ -84,23 +78,3 @@ privater Key als GitHub-Secret `TAURI_SIGNING_PRIVATE_KEY` — Backup in
 `/api/v1/connector/updates/{target}/{arch}/{current_version}`. Signierte Artefakte
 entstehen beim Tag-Build (`v*`) via `build-sign.yml`.
 
-## Am Z1-Pilot zu verifizieren / abschließen
-
-Diese Punkte brauchen den echten PVS bzw. ein Release und sind bewusst nicht
-„blind" fertig gebaut:
-
-- **VDDS-media** — Registrierung auf dem **echten Z1/CGM-Schema** (`[PVS]`/`[BVS]`
-  mit `NAMEk=`, verifiziert an einer Pilot-`VDDS_MMI.INI`) und der **Dokumenten-Push**
-  in die Akte sind verdrahtet: Der Connector liest Z1s `MMOINFIMPORT` (`MmoInfIm.exe`,
-  am Pilot vorhanden, `STAGES=123456`) aus und legt PDFs mit der Kaskade
-  **PATID → Name/Geburtsdatum → Variante A** ab (`documents.rs`, `vdds/media.rs::file_document`,
-  `vdds/ini.rs::pvs_import_program`). Am Z1 noch zu bestätigen: ob `MmoInfIm.exe` einen
-  **unbeaufsichtigten** Push (per PATID bzw. Name/Geburtsdatum) und ein **PDF** in die
-  Dokumentenablage annimmt, sowie die exakte CLI-/INI-Signatur. Backend-seitig fehlen
-  noch die Routen `documents/pending` + `documents/{id}/filed`.
-- **Auto-Update aktivieren** — bei einem Release `CONNECTOR_UPDATE_MANIFEST` (Backend-Env)
-  mit `version`/`url`/`signature` füllen; signierte Artefakte via Tag-Build (`v*`).
-- **Code-Signing-Profil** — Azure-Trusted-Signing-Certificate-Profile anlegen,
-  sobald die Identity Validation freigegeben ist (`docs/SIGNING.md`).
-- **.p7s/XML-Parsing + Auto-Einbestellung** — serverseitig (HKP-EBZ-Feature, braucht
-  echtes EBZ-Sample); der Connector liefert die Rohnachricht bereits.
