@@ -22,6 +22,7 @@ interface ConnectorConfig {
   kim_password: string;
   kim_poll_seconds: number;
   exchange_dir: string;
+  pvs_import_program: string;
 }
 
 let cfg: ConnectorConfig = blankConfig();
@@ -37,6 +38,7 @@ function blankConfig(): ConnectorConfig {
     kim_password: "",
     kim_poll_seconds: 60,
     exchange_dir: "",
+    pvs_import_program: "",
   };
 }
 
@@ -166,8 +168,9 @@ function collectFromWizard(): ConnectorConfig {
     kim_user: val("kim_user"),
     kim_password: val("kim_password"),
     kim_poll_seconds: 60,
-    // Feld nur im Dashboard vorhanden → im Wizard bestehenden Wert bewahren.
+    // Felder nur im Dashboard vorhanden → im Wizard bestehenden Wert bewahren.
     exchange_dir: ($("#exchange_dir") as HTMLInputElement | null) ? val("exchange_dir") : cfg.exchange_dir,
+    pvs_import_program: ($("#pvs_import_program") as HTMLInputElement | null) ? val("pvs_import_program") : cfg.pvs_import_program,
   };
 }
 
@@ -261,6 +264,7 @@ function renderDashboard() {
         <div class="field"><label>KIM-Passwort</label><input id="kim_password" type="password" /></div>
       </div>
       <div class="field"><label>VDDS-Austausch-Verzeichnis (leer = Temp)</label><input id="exchange_dir" placeholder="z. B. C:\\VDDS\\Austausch" /></div>
+      <div class="field"><label>PVS-Importprogramm (VDDS-media, leer = Dokument-Ablage pausiert)</label><input id="pvs_import_program" placeholder="z. B. C:\\Z1\\vddsimport.exe" /></div>
       <div class="actions">
         <button class="primary" id="save">Speichern</button>
         <button id="test_cloud">Cloud testen</button>
@@ -322,6 +326,7 @@ function applyConfig(c: ConnectorConfig) {
   setIf("kim_user", c.kim_user);
   setIf("kim_password", c.kim_password);
   setIf("exchange_dir", c.exchange_dir);
+  setIf("pvs_import_program", c.pvs_import_program);
 }
 
 async function saveFromDashboard() {

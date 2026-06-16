@@ -32,12 +32,22 @@ Zwei Pfade NICHT verwechseln:
 |---|---|---|
 | **PVS-Archiv** (wo Z1 das PDF endgültig ablegt, CGM PRAXISARCHIV) | **Z1** | nein (Z1-Sache; wir schreiben da nicht direkt rein, wir übergeben das PDF via media, Z1 importiert) |
 | **Austausch-Verzeichnis** (wo der Connector die temporäre `VDDS_MMO.INI` + das PDF ablegt) | Connector | **ja** — `exchange_dir` in der Config 🔧 |
+| **PVS-Importprogramm** (VDDS-media-Import-.exe des PVS, das der Connector zum Ablegen aufruft) | Z1, im `VDDS_MMI.INI` registriert | **ja** — `pvs_import_program` in der Config 🔧 |
 
 **Default:** leer → Windows-Temp (`%TEMP%`).
 **Prüfen:** Connector-Fenster → Konfiguration → „Austausch-Verzeichnis"; bzw.
 `config.json` im Per-User-AppData (`%APPDATA%\ai.praxishub.connector\config.json`).
 **Ändern:** Feld setzen und speichern (oder `config.json` editieren). 🅿️ Am Z1
 prüfen, ob Z1 ein **festes Abholverzeichnis** erwartet — dann dieses eintragen.
+
+> **Dokument-Ablage (Anamnese/HKP-PDF → Z1-Akte):** Der Connector pollt
+> `GET /connector/documents/pending`, legt jedes PDF per VDDS-media über das in
+> **`pvs_import_program`** hinterlegte Z1-Importprogramm ab und quittiert
+> `…/filed` (mit der getroffenen **Z1-PATID**) bzw. `…/failed` (Grund). Ohne
+> gesetztes `pvs_import_program` **pausiert** die Ablage (Dokumente bleiben
+> „wartet auf Übertragung"). Dokumente **ohne** Z1-PATID kann der Connector nicht
+> eindeutig zuordnen → sie werden als „Nicht zugeordnet" gemeldet; die Praxis
+> trägt dann die Patientennummer nach und stößt die Ablage erneut an.
 
 ---
 

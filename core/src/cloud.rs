@@ -8,7 +8,7 @@
 
 use crate::config::ConnectorConfig;
 use crate::error::{ConnectorError, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 #[derive(Clone)]
@@ -32,6 +32,39 @@ pub struct HkpReport {
     pub received_at: Option<String>,
     /// Komplette RFC822-Nachricht (Base64), bereits vom KIM-Clientmodul entschlüsselt.
     pub raw_message_b64: String,
+}
+
+/// Ein fertiges PDF (Anamnese/HKP), das in die PVS-Akte abzulegen ist.
+/// Cloud → Connector (`GET /connector/documents/pending`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PendingDocument {
+    /// Idempotenz-/Quittungs-Schlüssel (an `/filed` bzw. `/failed` zurückgeben).
+    pub id: String,
+    /// "anamnese" | "hkp".
+    pub kind: String,
+    /// Z1-PATID, falls bekannt; sonst leer (dann Match über Name+Geburtsdatum).
+    #[serde(default)]
+    pub patient_id: String,
+    #[serde(default)]
+    pub last_name: String,
+    #[serde(default)]
+    pub first_name: String,
+    /// Geburtsdatum `TT.MM.JJJJ`.
+    #[serde(default)]
+    pub birth_date: String,
+    /// Das fertige PDF, Base64.
+    pub pdf_base64: String,
+}
+
+#[derive(Debug, Serialize)]
+struct FiledBody<'a> {
+    patient_id: &'a str,
+    matched_by: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct FailedBody<'a> {
+    reason: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -108,6 +141,52 @@ impl CloudClient {
     pub async fn report_hkp(&self, report: &HkpReport) -> Result<()> {
         self.auth(self.http.post(self.url("hkp")))
             .json(report)
+            .send()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| ConnectorError::Http(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Holt alle noch nicht abgelegten Dokumente (PDFs) dieses Tenants.
+    /// Leeres Array, wenn nichts ansteht.
+    pub async fn fetch_pending_documents(&self) -> Result<Vec<PendingDocument>> {
+        let resp = self
+            .auth(self.http.get(self.url("documents/pending")))
+            .send()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| ConnectorError::Http(e.to_string()))?;
+        resp.json::<Vec<PendingDocument>>()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))
+    }
+
+    /// Quittiert einen erfolgreichen Z1-Import. `patient_id` = die Z1-PATID, gegen
+    /// die tatsächlich abgelegt wurde; `matched_by` = "patient_id" | "name_dob".
+    pub async fn mark_document_filed(
+        &self,
+        id: &str,
+        patient_id: &str,
+        matched_by: &str,
+    ) -> Result<()> {
+        self.auth(self.http.post(self.url(&format!("documents/{id}/filed"))))
+            .json(&FiledBody { patient_id, matched_by })
+            .send()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| ConnectorError::Http(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Meldet, dass das Dokument NICHT in Z1 abgelegt werden konnte (mit Grund).
+    /// Danach erscheint es nicht mehr unter `/pending`.
+    pub async fn mark_document_failed(&self, id: &str, reason: &str) -> Result<()> {
+        self.auth(self.http.post(self.url(&format!("documents/{id}/failed"))))
+            .json(&FailedBody { reason })
             .send()
             .await
             .map_err(|e| ConnectorError::Http(e.to_string()))?

@@ -103,7 +103,9 @@ pub(crate) async fn start_watcher(app: &AppHandle) {
         Ok(c) => c,
         Err(_) => return,
     };
-    if !cfg.kim_ready() || !cfg.cloud_ready() {
+    // Cloud ist das Minimum (Heartbeat + Dokument-Sync); KIM ist optional und wird
+    // im Watcher-Tick separat geprüft.
+    if !cfg.cloud_ready() {
         state
             .status
             .set_kim(Component::new(Health::Warn, "wartet auf Konfiguration"));

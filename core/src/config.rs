@@ -51,6 +51,13 @@ pub struct ConnectorConfig {
     /// Abholverzeichnis eintragen. Siehe docs/OPERATIONS.md.
     #[serde(default)]
     pub exchange_dir: String,
+
+    /// Vollpfad zum VDDS-media-Importprogramm des PVS (aus dessen `VDDS_MMI.INI`),
+    /// das der Connector zum Ablegen eines PDFs in die Akte aufruft. Leer ⇒ der
+    /// Dokument-Push pausiert (Dokumente bleiben „wartet auf Übertragung"), bis
+    /// der Pfad am Z1-Pilot eingetragen ist. Siehe docs/OPERATIONS.md.
+    #[serde(default)]
+    pub pvs_import_program: String,
 }
 
 fn default_true() -> bool {
@@ -70,6 +77,7 @@ impl Default for ConnectorConfig {
             kim_poll_seconds: default_poll(),
             kim_allow_invalid_cert: true,
             exchange_dir: String::new(),
+            pvs_import_program: String::new(),
         }
     }
 }
@@ -81,6 +89,17 @@ impl ConnectorConfig {
             std::env::temp_dir()
         } else {
             std::path::PathBuf::from(self.exchange_dir.trim())
+        }
+    }
+
+    /// Pfad zum VDDS-media-Importprogramm des PVS, falls konfiguriert.
+    /// `None` ⇒ der Dokument-Push pausiert (kein Programm zum Ablegen bekannt).
+    pub fn pvs_import_program_path(&self) -> Option<std::path::PathBuf> {
+        let p = self.pvs_import_program.trim();
+        if p.is_empty() {
+            None
+        } else {
+            Some(std::path::PathBuf::from(p))
         }
     }
 }

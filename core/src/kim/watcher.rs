@@ -93,25 +93,36 @@ impl Watcher {
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    let last_error = match self.poll_once().await {
-                        Ok(n) => {
-                            self.status.set_kim(Component::new(
-                                Health::Ok,
-                                format!("aktiv · {n} HKP(s) zuletzt gemeldet"),
-                            ));
-                            None
+                    // KIM nur pollen, wenn konfiguriert (der Dokument-Sync läuft auch ohne KIM).
+                    let kim_ready = self.cfg.kim_ready();
+                    let last_error = if kim_ready {
+                        match self.poll_once().await {
+                            Ok(n) => {
+                                self.status.set_kim(Component::new(
+                                    Health::Ok,
+                                    format!("aktiv · {n} HKP(s) zuletzt gemeldet"),
+                                ));
+                                None
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "KIM-Poll fehlgeschlagen");
+                                let s = e.to_string();
+                                self.status.set_kim(Component::new(Health::Err, format!("Fehler: {s}")));
+                                Some(s)
+                            }
                         }
-                        Err(e) => {
-                            warn!(error = %e, "KIM-Poll fehlgeschlagen");
-                            let s = e.to_string();
-                            self.status.set_kim(Component::new(Health::Err, format!("Fehler: {s}")));
-                            Some(s)
-                        }
+                    } else {
+                        self.status.set_kim(Component::new(Health::Unknown, "nicht konfiguriert"));
+                        None
                     };
+
+                    // Dokument-Sync (Anamnese/HKP-PDFs → PVS-Akte). Eigenständig, unabhängig von KIM.
+                    self.sync_documents().await;
+
                     // Heartbeat IMMER senden (auch bei Fehler) → Backend-Watchdog
                     // sieht sofort Stille (Dienst tot) oder gemeldete Fehler.
                     let vdds_ok = self.status.snapshot().vdds.state == Health::Ok;
-                    match self.cloud.heartbeat(vdds_ok, true, last_error.as_deref()).await {
+                    match self.cloud.heartbeat(vdds_ok, kim_ready, last_error.as_deref()).await {
                         Ok(()) => self.status.set_cloud(Component::new(Health::Ok, "verbunden")),
                         Err(e) => self.status.set_cloud(Component::new(Health::Warn, format!("Cloud: {e}"))),
                     }
@@ -186,5 +197,29 @@ impl Watcher {
         // Heartbeat wird zentral im run-Loop gesendet (immer, auch bei Fehler).
 
         Ok(reported)
+    }
+
+    /// Holt fertige PDFs aus der Cloud und legt sie in die PVS-Akte (best effort —
+    /// Fehler einzelner Dokumente werden pro Dokument an die Cloud gemeldet, der
+    /// Lauf läuft weiter). Aktualisiert den VDDS-Status für die UI.
+    async fn sync_documents(&self) {
+        match crate::documents::sync_pending(&self.cloud, &self.cfg).await {
+            Ok(o) if o.total() > 0 => {
+                debug!(filed = o.filed, failed = o.failed, paused = o.paused, "Dokument-Sync");
+                if o.paused > 0 {
+                    self.status.set_vdds(Component::new(
+                        Health::Warn,
+                        format!("{} Dokument(e) warten · PVS-Importprogramm nicht gesetzt", o.paused),
+                    ));
+                } else if o.filed > 0 {
+                    self.status
+                        .set_vdds(Component::new(Health::Ok, format!("{} Dokument(e) abgelegt", o.filed)));
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!(error = %e, "Dokument-Sync fehlgeschlagen");
+            }
+        }
     }
 }
