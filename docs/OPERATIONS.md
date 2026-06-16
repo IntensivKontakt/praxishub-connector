@@ -8,13 +8,19 @@ Status-Marker: ✅ gebaut · 🔧 in Arbeit · 🅿️ am Z1-Pilot zu verifizier
 
 ## 1. Woher weiß Z1 / Praxishub, um welchen Patienten es geht?
 
-**Dokument-Ablage (Anamnese-/HKP-PDF → Akte) — PVS-initiiert:** ✅
-Der Anwender hat in Z1 einen Patienten geöffnet und löst die Praxishub-Aktion aus.
-Z1 schreibt dann den **aktuellen Patientenkontext** (`PATID`, Name, Geburtsdatum)
-in die Austausch-INI (`VDDS_MMO.INI`, Sektion `[PATIENT]`) und ruft unser
-registriertes Modul auf. Der Connector liest diesen Kontext
-(`core/src/vdds/media.rs::handle_invocation`). **→ Z1 bestimmt den Patienten, nicht wir.**
-Das ist der sichere Weg: keine Patienten-Auswahl/Verwechslung auf unserer Seite.
+**Dokument-Ablage (Anamnese-/HKP-PDF → Akte) — Kaskade:** ✅ (🅿️ am Z1 zu bestätigen)
+Das Backend stellt das fertige PDF bereit, der Connector legt es in die Akte. Zur
+Patienten-Zuordnung greift eine **Kaskade** (`core/src/documents.rs`):
+1. **PATID** — das Backend kennt die Z1-`PATID` in ~90 % der Fälle → direkter,
+   unbeaufsichtigter Push über Z1s `MMOINFIMPORT` (`MmoInfIm.exe`). *Variante B.*
+2. **Name + Geburtsdatum** — Fallback, wenn keine/abgelehnte PATID.
+3. **Variante A (Z1-bestimmt)** — schlägt 1+2 fehl, bleibt das Dokument offen;
+   öffnet das Team den Patienten in Z1, übergibt Z1 uns über `PATDATIMPORT` die
+   echte `PATID` (`media.rs::handle_invocation`) und wir legen es damit ab.
+   **→ Hier bestimmt Z1 den Patienten, nicht wir** — keine Verwechslungsgefahr.
+Variante B läuft im KIM-Watcher-Zyklus (`documents::file_pending`), Variante A beim
+PVS-Aufruf (`documents::file_pending_for_patient`). 🅿️ Am Z1 zu bestätigen: ob
+`MmoInfIm.exe` einen unbeaufsichtigten Push akzeptiert (sonst greift Variante A).
 
 **HKP-Erkennung (KIM/EBZ) — aus der Nachricht selbst:** ✅
 Der Patient steht **in der EBZ-Antwort** (KVNR, Name, Geburtsdatum im signierten

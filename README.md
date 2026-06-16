@@ -89,10 +89,15 @@ entstehen beim Tag-Build (`v*`) via `build-sign.yml`.
 Diese Punkte brauchen den echten PVS bzw. ein Release und sind bewusst nicht
 „blind" fertig gebaut:
 
-- **VDDS-media** — Modul-Registrierung + Patient-Parsing beim PVS-Aufruf stehen
-  (Connector reagiert auf `<exe> <VDDS_MMO.INI>`); das media-**Antwortprotokoll**
-  (welche Felder der PVS zurückerwartet, PDF-Import-Trigger, INI-Schema) ist am Z1
-  zu verifizieren — siehe `vdds/media.rs::handle_invocation` und `vdds/ini.rs`.
+- **VDDS-media** — Registrierung auf dem **echten Z1/CGM-Schema** (`[PVS]`/`[BVS]`
+  mit `NAMEk=`, verifiziert an einer Pilot-`VDDS_MMI.INI`) und der **Dokumenten-Push**
+  in die Akte sind verdrahtet: Der Connector liest Z1s `MMOINFIMPORT` (`MmoInfIm.exe`,
+  am Pilot vorhanden, `STAGES=123456`) aus und legt PDFs mit der Kaskade
+  **PATID → Name/Geburtsdatum → Variante A** ab (`documents.rs`, `vdds/media.rs::file_document`,
+  `vdds/ini.rs::pvs_import_program`). Am Z1 noch zu bestätigen: ob `MmoInfIm.exe` einen
+  **unbeaufsichtigten** Push (per PATID bzw. Name/Geburtsdatum) und ein **PDF** in die
+  Dokumentenablage annimmt, sowie die exakte CLI-/INI-Signatur. Backend-seitig fehlen
+  noch die Routen `documents/pending` + `documents/{id}/filed`.
 - **Auto-Update aktivieren** — bei einem Release `CONNECTOR_UPDATE_MANIFEST` (Backend-Env)
   mit `version`/`url`/`signature` füllen; signierte Artefakte via Tag-Build (`v*`).
 - **Code-Signing-Profil** — Azure-Trusted-Signing-Certificate-Profile anlegen,

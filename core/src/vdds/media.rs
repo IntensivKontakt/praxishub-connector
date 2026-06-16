@@ -1,13 +1,22 @@
-//! Dokument-Ablage in die PVS-Akte über VDDS-media.
+//! Dokument-Ablage in die PVS-Akte über VDDS-media (BVS→PVS-Push, Stufe 6).
 //!
-//! Ablauf (media ist klassisch bild-/datei-zentriert): der BVS schreibt eine
-//! Austausch-INI (`VDDS_MMO.INI`) mit Patientenkontext + zu importierender Datei
-//! und ruft das vom PVS in `VDDS_MMI.INI` registrierte Import-Programm auf.
+//! Ablauf: der Connector schreibt eine Austausch-INI (`VDDS_MMO.INI`) mit
+//! Patientenkontext + zu importierender PDF-Datei und ruft das vom PVS in
+//! `VDDS_MMI.INI` registrierte Import-Programm auf (`MMOINFIMPORT`, bei Z1/CGM
+//! `MmoInfIm.exe` — siehe [`crate::vdds::ini::pvs_import_program`]).
 //!
-//! ⚠️ **Am Z1-Pilot zu verifizieren** (PRA-15, Prüfpunkte 2–3):
-//!   * Nimmt der PVS ein **PDF** in die **Dokumentenablage** (nicht nur Bild-Roh-Import)?
-//!   * Trigger: PVS-Button vs. Archiv-Pull (`PVS_ARCHIV` / `DIRECTIMAGEIMPORT`)?
-//! Bis dahin ist dies ein strukturiertes Gerüst, kein abgenommener Pfad.
+//! **Patienten-Zuordnung — Kaskade** (vom Backend gewünscht, weil die Z1-`PATID`
+//! in ~90 % der Fälle bereits bekannt ist):
+//!   1. **PATID** — direkter, eindeutiger Push (unbeaufsichtigt).
+//!   2. **Name + Geburtsdatum** — Fallback, wenn keine/abgelehnte PATID.
+//!   3. **Variante A** — schlägt 1+2 fehl, bleibt das Dokument offen und wird
+//!      abgelegt, sobald Z1 den Patienten öffnet und uns über `PATDATIMPORT` den
+//!      Kontext (inkl. PATID) übergibt (siehe [`handle_invocation`]).
+//!
+//! ⚠️ **Am Z1-Pilot zu verifizieren:** Akzeptiert `MmoInfIm.exe` einen Push per
+//! PATID bzw. per Name/Geburtsdatum unbeaufsichtigt, und nimmt es ein **PDF** in
+//! die Dokumentenablage? CLI-Signatur/Rückgabe-Konvention ebenfalls am echten PVS
+//! bestätigen. Bis dahin ist der Aufruf `<programm> <pfad-zur-MMO.ini>`.
 
 use crate::error::{ConnectorError, Result};
 use encoding_rs::WINDOWS_1252;
@@ -16,12 +25,24 @@ use std::path::{Path, PathBuf};
 /// Patientenkontext, wie ihn media in der `[PATIENT]`-Sektion erwartet.
 #[derive(Debug, Clone, Default)]
 pub struct PatientContext {
-    /// PVS-interne Patienten-ID (kommt PVS→uns über media).
+    /// PVS-interne Patienten-ID (leer = unbekannt → Name/Geburtsdatum-Fallback).
     pub patient_id: String,
     pub last_name: String,
     pub first_name: String,
     /// Geburtsdatum `TT.MM.JJJJ`.
     pub birth_date: String,
+}
+
+impl PatientContext {
+    /// Eindeutig per PVS-`PATID` identifizierbar?
+    pub fn has_patid(&self) -> bool {
+        !self.patient_id.trim().is_empty()
+    }
+
+    /// Genug für einen Name/Geburtsdatum-Fallback-Match?
+    pub fn has_name_and_dob(&self) -> bool {
+        !self.last_name.trim().is_empty() && !self.birth_date.trim().is_empty()
+    }
 }
 
 /// Welche Art Dokument abgelegt wird (steuert ggf. Kategorie/Karteireiter).
@@ -38,6 +59,14 @@ impl DocumentKind {
             DocumentKind::Hkp => "HKP",
         }
     }
+
+    /// Aus der Backend-Kennung (`"anamnese"`/`"hkp"`); unbekannt → Anamnese.
+    pub fn from_tag(tag: &str) -> Self {
+        match tag.trim().to_ascii_lowercase().as_str() {
+            "hkp" => DocumentKind::Hkp,
+            _ => DocumentKind::Anamnese,
+        }
+    }
 }
 
 pub struct ImportRequest<'a> {
@@ -46,28 +75,33 @@ pub struct ImportRequest<'a> {
     pub kind: DocumentKind,
 }
 
-/// Baut den `VDDS_MMO.INI`-Austauschtext (Windows-1252 wird beim Schreiben erzeugt).
+/// Ergebnis eines Ablage-Versuchs.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FilingOutcome {
+    /// PDF wurde an den PVS übergeben (Push erfolgreich).
+    Filed,
+    /// Unbeaufsichtigte Ablage (PATID + Name/Geburtsdatum) nicht möglich — das
+    /// Dokument bleibt offen für Variante A (Ablage beim nächsten Z1-Aufruf).
+    Deferred(String),
+}
+
+/// Baut den `VDDS_MMO.INI`-Austauschtext. `PATID` wird nur geschrieben, wenn
+/// bekannt — so erzwingt der Fallback eine Name/Geburtsdatum-Identifikation.
 pub fn build_mmo_ini(req: &ImportRequest) -> String {
     let p = req.patient;
-    // Reihenfolge/Schlüssel an media 1.4 angelehnt — am echten PVS verifizieren.
-    format!(
-        "[PATIENT]\r\n\
-PATID={patid}\r\n\
-NAME={last}\r\n\
-VORNAME={first}\r\n\
-GEBDATUM={birth}\r\n\
-[DOKUMENT]\r\n\
-DATEI={file}\r\n\
-TYP=PDF\r\n\
-KATEGORIE={kind}\r\n\
-BEMERKUNG=Erstellt über Praxishub\r\n",
-        patid = p.patient_id,
-        last = p.last_name,
-        first = p.first_name,
-        birth = p.birth_date,
-        file = req.pdf_path.to_string_lossy(),
-        kind = req.kind.label(),
-    )
+    let mut s = String::from("[PATIENT]\r\n");
+    if p.has_patid() {
+        s.push_str(&format!("PATID={}\r\n", p.patient_id.trim()));
+    }
+    s.push_str(&format!("NAME={}\r\n", p.last_name));
+    s.push_str(&format!("VORNAME={}\r\n", p.first_name));
+    s.push_str(&format!("GEBDATUM={}\r\n", p.birth_date));
+    s.push_str("[DOKUMENT]\r\n");
+    s.push_str(&format!("DATEI={}\r\n", req.pdf_path.to_string_lossy()));
+    s.push_str("TYP=PDF\r\n");
+    s.push_str(&format!("KATEGORIE={}\r\n", req.kind.label()));
+    s.push_str("BEMERKUNG=Erstellt über Praxishub\r\n");
+    s
 }
 
 /// Schreibt die Austausch-INI ins (konfigurierte) Austausch-Verzeichnis und gibt
@@ -81,33 +115,65 @@ fn write_exchange_ini(req: &ImportRequest, exchange_dir: &Path) -> Result<PathBu
     Ok(path)
 }
 
-/// Legt ein PDF über das registrierte PVS-Import-Programm in die Akte.
+/// Ein einzelner Import-Aufruf: INI schreiben, PVS-Programm starten.
+/// `Ok(true)` = PVS meldete Erfolg, `Ok(false)` = Programm lief, lehnte aber ab
+/// (z. B. Patient nicht gefunden), `Err` = Programm gar nicht startbar (Konfig).
+fn run_import(import_program: &Path, req: &ImportRequest, exchange_dir: &Path) -> Result<bool> {
+    let ini_path = write_exchange_ini(req, exchange_dir)?;
+    // Konvention: `<programm> <pfad-zur-MMO.ini>` — exakte CLI-Signatur am Z1 verifizieren.
+    let status = std::process::Command::new(import_program)
+        .arg(&ini_path)
+        .status()
+        .map_err(|e| ConnectorError::Vdds(format!("PVS-Programm nicht startbar: {e}")))?;
+    Ok(status.success())
+}
+
+/// Legt ein PDF über das PVS-Importmodul in die Akte — mit der Kaskade
+/// **PATID → Name/Geburtsdatum → (offen für Variante A)**.
 ///
-/// `pvs_program` = Pfad zum media-Import-Executable des PVS (aus `VDDS_MMI.INI`).
-/// `exchange_dir` = Austausch-Verzeichnis (Config; leer → Windows-Temp).
-pub fn import_document(pvs_program: &Path, req: &ImportRequest, exchange_dir: &Path) -> Result<()> {
+/// `import_program` = aus `VDDS_MMI.INI` ausgelesenes `MMOINFIMPORT` (Z1: `MmoInfIm.exe`).
+pub fn file_document(
+    import_program: &Path,
+    req: &ImportRequest,
+    exchange_dir: &Path,
+) -> Result<FilingOutcome> {
     if !req.pdf_path.exists() {
         return Err(ConnectorError::Vdds(format!(
             "PDF nicht gefunden: {}",
             req.pdf_path.display()
         )));
     }
-    let ini_path = write_exchange_ini(req, exchange_dir)?;
 
-    // Konvention: Aufruf `<pvs_program> <pfad-zur-MMO.ini>`. Exakte CLI-Signatur
-    // (Schalter wie /import, Rückgabe-Konvention) am Z1 verifizieren.
-    let status = std::process::Command::new(pvs_program)
-        .arg(&ini_path)
-        .status()
-        .map_err(|e| ConnectorError::Vdds(format!("PVS-Programm nicht startbar: {e}")))?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(ConnectorError::Vdds(format!(
-            "PVS-Import endete mit Status {status}"
-        )))
+    // 1) PATID-Versuch (eindeutig, unbeaufsichtigt).
+    if req.patient.has_patid() && run_import(import_program, req, exchange_dir)? {
+        tracing::info!(patid = %req.patient.patient_id, "VDDS-media: Dokument per PATID abgelegt");
+        return Ok(FilingOutcome::Filed);
     }
+
+    // 2) Name/Geburtsdatum-Fallback (PATID bewusst weggelassen → erzwingt Match).
+    if req.patient.has_name_and_dob() {
+        let by_name = PatientContext {
+            patient_id: String::new(),
+            ..req.patient.clone()
+        };
+        let req2 = ImportRequest {
+            patient: &by_name,
+            pdf_path: req.pdf_path,
+            kind: req.kind,
+        };
+        if run_import(import_program, &req2, exchange_dir)? {
+            tracing::info!(
+                name = %req.patient.last_name,
+                "VDDS-media: Dokument per Name/Geburtsdatum abgelegt"
+            );
+            return Ok(FilingOutcome::Filed);
+        }
+    }
+
+    // 3) Variante A: offen lassen, bis Z1 den Patienten öffnet.
+    Ok(FilingOutcome::Deferred(
+        "unbeaufsichtigte Ablage nicht möglich – wartet auf Z1-Patientenkontext".into(),
+    ))
 }
 
 // ── Inbound: vom PVS als Media-Handler aufgerufen ────────────────────────────
@@ -134,13 +200,9 @@ pub fn parse_patient_from_request(ini_path: &Path) -> Result<PatientContext> {
 }
 
 /// Einstiegspunkt, wenn der PVS unser Modul via VDDS-media aufruft
-/// (`praxishub-connector.exe <pfad-zur-VDDS_MMO.INI>`). Parst den Patientenkontext.
-///
-/// ⚠️ **Z1-Pilot offen:** der weitere Ablauf — passende Praxishub-Dokumente für
-/// diesen Patienten aus der Cloud holen und dem PVS zum Import zurückgeben — hängt
-/// vom konkreten media-Antwortprotokoll des Z1 ab (Antwort-INI-Felder, Import-Trigger).
-/// Hier wird der Kontext geparst und protokolliert; das Zurückschreiben folgt nach
-/// Verifikation am echten PVS.
+/// (`praxishub-connector.exe <pfad-zur-VDDS_MMO.INI>`). Parst den Patientenkontext
+/// (inkl. der vom PVS vergebenen PATID) — das ist die Grundlage für Variante A:
+/// offene Dokumente dieses Patienten lassen sich nun mit echter PATID ablegen.
 pub fn handle_invocation(ini_path: &Path) -> Result<PatientContext> {
     let patient = parse_patient_from_request(ini_path)?;
     tracing::info!(
@@ -154,6 +216,15 @@ pub fn handle_invocation(ini_path: &Path) -> Result<PatientContext> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn patient_full() -> PatientContext {
+        PatientContext {
+            patient_id: "4711".into(),
+            last_name: "Mustermann".into(),
+            first_name: "Erika".into(),
+            birth_date: "01.01.1980".into(),
+        }
+    }
 
     #[test]
     fn parst_patient_aus_request_ini() {
@@ -178,13 +249,8 @@ mod tests {
     }
 
     #[test]
-    fn mmo_ini_enthaelt_patient_und_dokument() {
-        let patient = PatientContext {
-            patient_id: "4711".into(),
-            last_name: "Mustermann".into(),
-            first_name: "Erika".into(),
-            birth_date: "01.01.1980".into(),
-        };
+    fn mmo_ini_enthaelt_patid_wenn_bekannt() {
+        let patient = patient_full();
         let pdf = PathBuf::from("C:\\tmp\\anamnese.pdf");
         let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Anamnese };
         let ini = build_mmo_ini(&req);
@@ -192,5 +258,52 @@ mod tests {
         assert!(ini.contains("NAME=Mustermann"));
         assert!(ini.contains("KATEGORIE=Anamnesebogen"));
         assert!(ini.contains("anamnese.pdf"));
+    }
+
+    #[test]
+    fn mmo_ini_ohne_patid_wenn_unbekannt() {
+        let patient = PatientContext { patient_id: String::new(), ..patient_full() };
+        let pdf = PathBuf::from("C:\\tmp\\hkp.pdf");
+        let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Hkp };
+        let ini = build_mmo_ini(&req);
+        assert!(!ini.contains("PATID="));
+        assert!(ini.contains("NAME=Mustermann"));
+        assert!(ini.contains("KATEGORIE=HKP"));
+    }
+
+    // Die Kaskade über echte Prozessaufrufe testen wir mit /bin/true|false (Unix).
+    #[cfg(unix)]
+    fn dummy_pdf() -> PathBuf {
+        let p = std::env::temp_dir().join("praxishub_test_doc.pdf");
+        std::fs::write(&p, b"%PDF-1.4 test").unwrap();
+        p
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn kaskade_filed_wenn_programm_erfolg_meldet() {
+        let pdf = dummy_pdf();
+        let patient = patient_full();
+        let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Anamnese };
+        let out = file_document(Path::new("/bin/true"), &req, &std::env::temp_dir()).unwrap();
+        assert_eq!(out, FilingOutcome::Filed);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn kaskade_deferred_wenn_programm_immer_ablehnt() {
+        let pdf = dummy_pdf();
+        let patient = patient_full(); // PATID + Name/DOB → beide Versuche scheitern an /bin/false
+        let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Anamnese };
+        let out = file_document(Path::new("/bin/false"), &req, &std::env::temp_dir()).unwrap();
+        assert!(matches!(out, FilingOutcome::Deferred(_)));
+    }
+
+    #[test]
+    fn kaskade_fehlt_pdf_ist_fehler() {
+        let patient = patient_full();
+        let missing = PathBuf::from("/pfad/gibtsnicht-12345.pdf");
+        let req = ImportRequest { patient: &patient, pdf_path: &missing, kind: DocumentKind::Anamnese };
+        assert!(file_document(Path::new("/bin/true"), &req, &std::env::temp_dir()).is_err());
     }
 }

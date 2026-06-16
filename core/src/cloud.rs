@@ -8,7 +8,7 @@
 
 use crate::config::ConnectorConfig;
 use crate::error::{ConnectorError, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 #[derive(Clone)]
@@ -32,6 +32,33 @@ pub struct HkpReport {
     pub received_at: Option<String>,
     /// Komplette RFC822-Nachricht (Base64), bereits vom KIM-Clientmodul entschlüsselt.
     pub raw_message_b64: String,
+}
+
+/// Ein vom Backend zur Ablage in die PVS-Akte bereitgestelltes Dokument
+/// (unterschriebene Anamnese / HKP-PDF). Die Z1-`PATID` liegt laut Backend in
+/// ~90 % der Fälle bereits vor; sonst greift der Name/Geburtsdatum-Fallback.
+///
+/// **Backend-Vertrag offen:** Route `GET /api/v1/connector/documents/pending`
+/// muss in der Praxishub-API noch angelegt werden (analog zu `hkp`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PendingDocument {
+    /// Backend-Dokument-ID (Idempotenz-/Ack-Schlüssel).
+    pub id: String,
+    /// `"anamnese"` | `"hkp"`.
+    #[serde(default)]
+    pub kind: String,
+    /// Z1-interne PATID, falls dem Backend bekannt (sonst leer → Fallback).
+    #[serde(default)]
+    pub patient_id: String,
+    #[serde(default)]
+    pub last_name: String,
+    #[serde(default)]
+    pub first_name: String,
+    /// Geburtsdatum `TT.MM.JJJJ`.
+    #[serde(default)]
+    pub birth_date: String,
+    /// Das abzulegende PDF, Base64-kodiert.
+    pub pdf_base64: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -108,6 +135,33 @@ impl CloudClient {
     pub async fn report_hkp(&self, report: &HkpReport) -> Result<()> {
         self.auth(self.http.post(self.url("hkp")))
             .json(report)
+            .send()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| ConnectorError::Http(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Holt die aktuell zur PVS-Ablage anstehenden Dokumente.
+    /// **Backend-Vertrag offen:** `GET /api/v1/connector/documents/pending`.
+    pub async fn fetch_pending_documents(&self) -> Result<Vec<PendingDocument>> {
+        let resp = self
+            .auth(self.http.get(self.url("documents/pending")))
+            .send()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| ConnectorError::Http(e.to_string()))?;
+        resp.json::<Vec<PendingDocument>>()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))
+    }
+
+    /// Quittiert ein abgelegtes Dokument; das Backend nimmt es aus „pending".
+    /// **Backend-Vertrag offen:** `POST /api/v1/connector/documents/{id}/filed`.
+    pub async fn ack_document_filed(&self, id: &str) -> Result<()> {
+        self.auth(self.http.post(self.url(&format!("documents/{id}/filed"))))
             .send()
             .await
             .map_err(|e| ConnectorError::Http(e.to_string()))?

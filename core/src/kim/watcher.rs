@@ -108,6 +108,12 @@ impl Watcher {
                             Some(s)
                         }
                     };
+                    // Variante B: anstehende Dokumente unbeaufsichtigt in die
+                    // PVS-Akte legen (PATID → Name/Geburtsdatum). Unabhängig vom
+                    // KIM-Ergebnis; Fehler hier dürfen den Watcher nicht stören.
+                    if let Err(e) = crate::documents::file_pending(&self.cfg).await {
+                        debug!(error = %e, "Dokumenten-Push-Zyklus fehlgeschlagen");
+                    }
                     // Heartbeat IMMER senden (auch bei Fehler) → Backend-Watchdog
                     // sieht sofort Stille (Dienst tot) oder gemeldete Fehler.
                     let vdds_ok = self.status.snapshot().vdds.state == Health::Ok;
