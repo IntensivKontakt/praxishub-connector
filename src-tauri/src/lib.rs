@@ -61,6 +61,19 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 commands::start_watcher(&handle).await;
             });
+
+            // Auto-Update: beim Start einmal den (signierten) Update-Feed prüfen und
+            // ein verfügbares Update still im Hintergrund installieren. Nur im
+            // Release-Build — im Dev gibt es keinen Updater-Kontext. Schlägt der Feed
+            // fehl oder ist leer (Backend ohne Manifest), passiert nichts (nur Log),
+            // damit der Start nie blockiert.
+            #[cfg(not(debug_assertions))]
+            {
+                let updater_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    apply_pending_update(updater_handle).await;
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -74,4 +87,36 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("Fehler beim Start der Tauri-Anwendung");
+}
+
+/// Prüft den Updater-Feed und installiert ein verfügbares, signiertes Update still
+/// im Hintergrund; danach Neustart, um es anzuwenden. Schlägt der Feed fehl oder ist
+/// er leer (Backend noch ohne Manifest), wird nur geloggt — der Connector läuft
+/// normal weiter. So ziehen künftige Releases automatisch durch, sobald getaggt.
+#[cfg(not(debug_assertions))]
+async fn apply_pending_update(handle: tauri::AppHandle) {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = match handle.updater() {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::warn!(error = %e, "Updater nicht verfügbar");
+            return;
+        }
+    };
+    match updater.check().await {
+        Ok(Some(update)) => {
+            tracing::info!(version = %update.version, "Update gefunden — installiere im Hintergrund");
+            if let Err(e) = update
+                .download_and_install(|_downloaded: usize, _total: Option<u64>| {}, || {})
+                .await
+            {
+                tracing::warn!(error = %e, "Update-Installation fehlgeschlagen");
+                return;
+            }
+            tracing::info!("Update installiert — Neustart, um es anzuwenden");
+            handle.restart();
+        }
+        Ok(None) => tracing::debug!("Connector ist aktuell — kein Update"),
+        Err(e) => tracing::warn!(error = %e, "Update-Check fehlgeschlagen (Feed erreichbar?)"),
+    }
 }
