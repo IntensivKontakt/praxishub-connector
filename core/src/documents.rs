@@ -7,9 +7,10 @@
 //!   * nicht zuzuordnen / Importfehler → `POST /documents/{id}/failed` (mit Grund)
 //!
 //! „Für genau diesen Patienten": im Push-Modell adressiert VDDS-media den Patienten
-//! über die **Z1-PATID**. Fehlt sie (Praxishub kannte sie nicht), kann der Patient
-//! nicht eindeutig zugeordnet werden → das Dokument wird als `failed` gemeldet und
-//! die Praxis sieht eine „Nicht zugeordnet"-Warnung (statt stiller Endlos-Retrys).
+//! über die **Z1-PATID**. Die Cloud liefert unter `/pending` NUR Dokumente mit
+//! aufgelöster PATID aus (sie löst sie bei jedem Poll neu auf und hält Dokumente
+//! ohne PATID im Karenzfenster zurück). Sollte dennoch eines ohne PATID ankommen,
+//! überspringt der Connector es (die Cloud entscheidet über „nicht zugeordnet").
 //!
 //! ⚠️ **Am Z1-Pilot zu verifizieren** (vgl. [`crate::vdds::media`]): nimmt der PVS
 //! ein PDF per media-Push, und wie lautet die exakte CLI-/Trigger-Konvention.
@@ -28,8 +29,9 @@ use tracing::{info, warn};
 pub enum DocPlan {
     /// Z1-PATID vorhanden und Importprogramm da → ablegen.
     Import,
-    /// Keine Z1-PATID → Patient nicht eindeutig zuzuordnen → als `failed` melden.
-    FailNoPatid,
+    /// Keine Z1-PATID (sollte die Cloud gar nicht ausliefern) → überspringen,
+    /// die Cloud entscheidet über Karenz/„nicht zugeordnet".
+    SkipNoPatid,
     /// PATID da, aber kein PVS-Importprogramm konfiguriert → pausieren (pending lassen).
     PausedNoProgram,
 }
@@ -37,7 +39,7 @@ pub enum DocPlan {
 /// Reine Entscheidungslogik (keine Seiteneffekte).
 pub fn plan(doc: &PendingDocument, has_program: bool) -> DocPlan {
     if doc.patient_id.trim().is_empty() {
-        DocPlan::FailNoPatid
+        DocPlan::SkipNoPatid
     } else if !has_program {
         DocPlan::PausedNoProgram
     } else {
@@ -70,11 +72,13 @@ pub struct DocSyncOutcome {
     pub failed: usize,
     /// Pausiert, weil (noch) kein PVS-Importprogramm konfiguriert ist.
     pub paused: usize,
+    /// Übersprungen, weil (unerwartet) keine Z1-PATID vorhanden war.
+    pub skipped: usize,
 }
 
 impl DocSyncOutcome {
     pub fn total(&self) -> usize {
-        self.filed + self.failed + self.paused
+        self.filed + self.failed + self.paused + self.skipped
     }
 }
 
@@ -95,18 +99,11 @@ pub async fn sync_pending(cloud: &CloudClient, cfg: &ConnectorConfig) -> Result<
 
     for doc in &docs {
         match plan(doc, program.is_some()) {
-            DocPlan::FailNoPatid => {
-                warn!(id = %doc.id, "Dokument ohne Z1-PATID — nicht eindeutig zuzuordnen");
-                if let Err(e) = cloud
-                    .mark_document_failed(
-                        &doc.id,
-                        "Keine Z1-Patientennummer — Patient in Z1 nicht eindeutig zuzuordnen.",
-                    )
-                    .await
-                {
-                    warn!(id = %doc.id, error = %e, "Konnte 'failed' nicht melden");
-                }
-                out.failed += 1;
+            DocPlan::SkipNoPatid => {
+                // Sollte nicht vorkommen (Cloud liefert nur Dokumente mit PATID);
+                // defensiv überspringen — die Cloud hält/altert das Dokument selbst.
+                warn!(id = %doc.id, "Dokument ohne Z1-PATID erhalten — übersprungen");
+                out.skipped += 1;
             }
             DocPlan::PausedNoProgram => {
                 out.paused += 1;
@@ -184,9 +181,9 @@ mod tests {
     }
 
     #[test]
-    fn plan_ohne_patid_ist_failnopatid() {
-        assert_eq!(plan(&doc(""), true), DocPlan::FailNoPatid);
-        assert_eq!(plan(&doc("   "), true), DocPlan::FailNoPatid);
+    fn plan_ohne_patid_wird_uebersprungen() {
+        assert_eq!(plan(&doc(""), true), DocPlan::SkipNoPatid);
+        assert_eq!(plan(&doc("   "), true), DocPlan::SkipNoPatid);
     }
 
     #[test]
