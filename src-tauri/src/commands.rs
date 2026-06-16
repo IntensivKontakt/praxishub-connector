@@ -103,6 +103,15 @@ pub(crate) async fn start_watcher(app: &AppHandle) {
         Ok(c) => c,
         Err(_) => return,
     };
+
+    // Dokumenten-Push (Variante B): hängt NUR an der Cloud, nicht am KIM-Postfach.
+    // Läuft daher auch dann, wenn KIM gerade nicht erreichbar/eingerichtet ist.
+    if cfg.cloud_ready() {
+        let handle = connector_core::documents::spawn(cfg.clone());
+        *state.doc_watcher.lock().await = Some(handle);
+    }
+
+    // KIM-Watcher: braucht zusätzlich ein konfiguriertes KIM-Postfach.
     if !cfg.kim_ready() || !cfg.cloud_ready() {
         state
             .status
@@ -117,8 +126,10 @@ pub(crate) async fn start_watcher(app: &AppHandle) {
 
 pub(crate) async fn stop_watcher(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let handle = state.watcher.lock().await.take();
-    if let Some(handle) = handle {
+    if let Some(handle) = state.watcher.lock().await.take() {
+        handle.stop().await;
+    }
+    if let Some(handle) = state.doc_watcher.lock().await.take() {
         handle.stop().await;
     }
 }
