@@ -120,21 +120,46 @@ fn run_push_test(args: &[String]) -> i32 {
     };
     let req = media::ImportRequest { patient: &patient, pdf_path: &pdf_path, kind };
 
-    match media::file_document(&import_program, &req, &cfg.exchange_dir_path()) {
-        Ok(media::FilingOutcome::Filed { .. }) => {
+    match media::import_once_diagnostic(&import_program, &req, &cfg.exchange_dir_path()) {
+        Ok(d) => {
+            let ready_done = d.ready.as_deref() == Some("1");
+            let ok = ready_done && d.errorlevel.as_deref() == Some("0");
+            let verdict = if ok {
+                "OK · READY=1 & ERRORLEVEL=0 — Import erfolgreich. In Z1 beim Patienten im Archiv prüfen."
+            } else if ready_done {
+                "ABGELEHNT · READY=1, aber ERRORLEVEL != 0 — Z1 hat den Import nicht übernommen (Code/Text unten)."
+            } else {
+                "UNKLAR · kein READY=1 (Handshake) — MmoInfIm evtl. synchron oder INI abgelehnt; Exit-Code + INI unten ansehen."
+            };
             report(&format!(
-                "OK: Z1 hat das PDF angenommen (MMOINFIMPORT={}). \
-                 Jetzt in Z1 beim Patienten im Archiv prüfen, ob es sichtbar ist.",
-                import_program.display()
+                "Praxishub --push-test · Diagnose\n\
+                 ================================\n\
+                 {verdict}\n\n\
+                 MMOINFIMPORT : {prog}\n\
+                 Exit-Code    : {code:?} (success={succ})\n\
+                 READY        : {ready}\n\
+                 ERRORLEVEL   : {el}\n\n\
+                 Dateien im Austauschordner nach dem Aufruf:\n{files}\n\n\
+                 ===== Gesendete VDDS_MMO.INI =====\n{sent}\n\
+                 ===== VDDS_MMO.INI NACH dem Aufruf (Antwort von MmoInfIm) =====\n{after}",
+                prog = import_program.display(),
+                code = d.exit_code,
+                succ = d.exit_success,
+                ready = d.ready.as_deref().unwrap_or("(keins)"),
+                el = d.errorlevel.as_deref().unwrap_or("(keins)"),
+                files = if d.exchange_files.is_empty() {
+                    "(keine)".to_string()
+                } else {
+                    d.exchange_files.join("\n")
+                },
+                sent = d.sent_ini,
+                after = d.ini_after,
             ));
-            0
-        }
-        Ok(media::FilingOutcome::Deferred(reason)) => {
-            report(&format!(
-                "ABGELEHNT: MMOINFIMPORT lief, übernahm den Patienten aber nicht ({reason}). \
-                 PATID bzw. Name+Geburtsdatum prüfen."
-            ));
-            3
+            if ok {
+                0
+            } else {
+                3
+            }
         }
         Err(e) => {
             report(&format!("FEHLER beim Aufruf von MMOINFIMPORT: {e}"));

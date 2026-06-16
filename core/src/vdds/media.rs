@@ -53,10 +53,13 @@ pub enum DocumentKind {
 }
 
 impl DocumentKind {
-    fn label(self) -> &'static str {
+    /// VDDS-media-Objekttyp: `(Klartext für TYPE=, Nummer für TYPENR= gemäß Tabelle 15)`.
+    fn media_type(self) -> (&'static str, u32) {
         match self {
-            DocumentKind::Anamnese => "Anamnesebogen",
-            DocumentKind::Hkp => "HKP",
+            // Heil- und Kostenplan (Tabelle 15, Nr. 14).
+            DocumentKind::Hkp => ("Heil- und Kostenplan", 14),
+            // Anamnesebogen → Formular (Tabelle 15, Nr. 10).
+            DocumentKind::Anamnese => ("Formular", 10),
         }
     }
 
@@ -87,22 +90,75 @@ pub enum FilingOutcome {
     Deferred(String),
 }
 
-/// Baut den `VDDS_MMO.INI`-Austauschtext. `PATID` wird nur geschrieben, wenn
-/// bekannt — so erzwingt der Fallback eine Name/Geburtsdatum-Identifikation.
-pub fn build_mmo_ini(req: &ImportRequest) -> String {
-    let p = req.patient;
-    let mut s = String::from("[PATIENT]\r\n");
-    if p.has_patid() {
-        s.push_str(&format!("PATID={}\r\n", p.patient_id.trim()));
+/// VDDS-media-Zielangaben aus der `VDDS_MMI.INI` (Sektionsnamen für den Push).
+#[derive(Debug, Clone)]
+pub struct VddsTarget {
+    /// `PVS=` — Sektion der empfangenden PVS/Archiv (die mit `MMOINFIMPORT`).
+    pub pvs_section: String,
+    /// `FROMPVS=` — patientenführende PVS-Sektion.
+    pub from_pvs_section: String,
+    /// `BVS=` — unsere eigene BVS-Sektion (`PRAXISHUB`).
+    pub bvs_section: String,
+    /// `PRXNR=` — Praxisnummer (Default „1", falls unbekannt).
+    pub prxnr: String,
+}
+
+impl VddsTarget {
+    /// Liest die nötigen Sektionsnamen aus der `VDDS_MMI.INI`. Fehlt etwas, werden
+    /// Defaults benutzt — am Z1-Pilot via `--push-test`-Diagnose zu bestätigen.
+    pub fn from_mmi_ini() -> Self {
+        use crate::vdds::ini;
+        let bytes = std::fs::read(ini::default_ini_path()).unwrap_or_default();
+        let (text, _, _) = WINDOWS_1252.decode(&bytes);
+        let mmi = ini::Ini::parse(&text);
+        let archive = mmi.get("PVS", "ARCHIV").unwrap_or("").trim().to_string();
+        let pvs_name = mmi.get("PVS", "NAME1").unwrap_or("").trim().to_string();
+        VddsTarget {
+            // Empfänger ist das Archiv-Modul (MMOINFIMPORT); fällt es weg, die PVS selbst.
+            pvs_section: if archive.is_empty() { pvs_name.clone() } else { archive },
+            from_pvs_section: pvs_name,
+            bvs_section: ini::SECTION.to_string(),
+            prxnr: "1".to_string(),
+        }
     }
-    s.push_str(&format!("NAME={}\r\n", p.last_name));
-    s.push_str(&format!("VORNAME={}\r\n", p.first_name));
-    s.push_str(&format!("GEBDATUM={}\r\n", p.birth_date));
-    s.push_str("[DOKUMENT]\r\n");
-    s.push_str(&format!("DATEI={}\r\n", req.pdf_path.to_string_lossy()));
-    s.push_str("TYP=PDF\r\n");
-    s.push_str(&format!("KATEGORIE={}\r\n", req.kind.label()));
-    s.push_str("BEMERKUNG=Erstellt über Praxishub\r\n");
+}
+
+/// Baut den `VDDS_MMO.INI`-Austauschtext für den **MMOINFIMPORT-Push**
+/// (VDDS-media 1.4, Tabelle 5–7). Patient via `[PATID]` (PATID Pflicht,
+/// englische Feldnamen), Objekt als direkt übergebene Datei per `IMAGEDATA=`
+/// (`EXT=PDF`, Dokument → `COLORTYPE=LINEART`). `READY/ERRORLEVEL` als Handshake.
+pub fn build_mmo_ini(req: &ImportRequest, target: &VddsTarget) -> String {
+    let p = req.patient;
+    let (type_text, typenr) = req.kind.media_type();
+    let now = chrono::Local::now();
+    let date = now.format("%Y%m%d").to_string(); // CCYYMMDD
+    let mmoid = now.format("PH%Y%m%d%H%M%S").to_string(); // eindeutige Objekt-ID
+    let mut s = String::new();
+    // Kopf-/Patientensektion (Tabelle 5).
+    s.push_str("[PATID]\r\n");
+    s.push_str(&format!("PVS={}\r\n", target.pvs_section));
+    s.push_str(&format!("BVS={}\r\n", target.bvs_section));
+    s.push_str(&format!("FROMPVS={}\r\n", target.from_pvs_section));
+    s.push_str(&format!("PRXNR={}\r\n", target.prxnr));
+    s.push_str(&format!("PATID={}\r\n", p.patient_id.trim()));
+    s.push_str(&format!("LASTNAME={}\r\n", p.last_name));
+    s.push_str(&format!("FIRSTNAME={}\r\n", p.first_name));
+    s.push_str("ERRORLEVEL=0\r\n");
+    s.push_str("READY=0\r\n");
+    // Objektliste (Tabelle 6).
+    s.push_str("[MMOS]\r\n");
+    s.push_str("COUNT=1\r\n");
+    // Objekt 1 (Tabelle 7) — das PDF.
+    s.push_str("[MMO1]\r\n");
+    s.push_str(&format!("MMOID={mmoid}\r\n"));
+    s.push_str(&format!("PRXNR={}\r\n", target.prxnr));
+    s.push_str(&format!("TYPE={type_text}\r\n"));
+    s.push_str(&format!("TYPENR={typenr}\r\n"));
+    s.push_str("EXT=PDF\r\n");
+    s.push_str("COLORTYPE=LINEART\r\n");
+    s.push_str(&format!("DATE={date}\r\n"));
+    s.push_str("COMMENT=Erstellt über Praxishub\r\n");
+    s.push_str(&format!("IMAGEDATA={}\r\n", req.pdf_path.to_string_lossy()));
     s
 }
 
@@ -111,10 +167,34 @@ pub fn build_mmo_ini(req: &ImportRequest) -> String {
 fn write_exchange_ini(req: &ImportRequest, exchange_dir: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(exchange_dir)?;
     let path = exchange_dir.join("VDDS_MMO.INI");
-    let text = build_mmo_ini(req);
+    let target = VddsTarget::from_mmi_ini();
+    let text = build_mmo_ini(req, &target);
     let (bytes, _, _) = WINDOWS_1252.encode(&text);
     std::fs::write(&path, bytes)?;
     Ok(path)
+}
+
+/// Liest einen Feldwert (egal in welcher Sektion) aus einer INI-Datei.
+fn read_ini_field(ini_path: &Path, key: &str) -> Option<String> {
+    let bytes = std::fs::read(ini_path).ok()?;
+    let (text, _, _) = WINDOWS_1252.decode(&bytes);
+    text.lines().find_map(|line| {
+        let (k, v) = line.split_once('=')?;
+        k.trim()
+            .eq_ignore_ascii_case(key)
+            .then(|| v.trim().to_string())
+    })
+}
+
+/// Erfolg eines Imports anhand des VDDS-Handshakes bewerten: Das PVS-Modul setzt
+/// als **letzte** Aktion `READY=1` und trägt `ERRORLEVEL` ein (0 = ok). Nur dann
+/// ist die Aussage verlässlich. Hat es den Handshake nicht gesetzt (z. B. rein
+/// synchrones Modul), fällt die Bewertung auf den Prozess-Exit-Code zurück.
+fn import_succeeded(ini_path: &Path, exit_success: bool) -> bool {
+    match read_ini_field(ini_path, "READY").as_deref() {
+        Some("1") => read_ini_field(ini_path, "ERRORLEVEL").as_deref() == Some("0"),
+        _ => exit_success,
+    }
 }
 
 /// Ein einzelner Import-Aufruf: INI schreiben, PVS-Programm starten.
@@ -127,7 +207,84 @@ fn run_import(import_program: &Path, req: &ImportRequest, exchange_dir: &Path) -
         .arg(&ini_path)
         .status()
         .map_err(|e| ConnectorError::Vdds(format!("PVS-Programm nicht startbar: {e}")))?;
-    Ok(status.success())
+    // Erfolg über den READY/ERRORLEVEL-Handshake bewerten (Fallback: Exit-Code).
+    Ok(import_succeeded(&ini_path, status.success()))
+}
+
+/// Diagnose eines **einzelnen** Import-Aufrufs — für `--push-test` am echten Z1.
+/// Liefert Exit-Code **und** das, was `MmoInfIm` in die Austausch-INI
+/// zurückschreibt (v. a. ein `ERRORLEVEL` — die VDDS-media-Erfolgs-/Fehler-
+/// Konvention) sowie die Dateien im Austauschordner. Verändert die normale
+/// Erfolgslogik NICHT, sondern legt offen, *warum* Z1 (nicht) übernimmt.
+#[derive(Debug)]
+pub struct ImportDiagnostics {
+    pub exit_code: Option<i32>,
+    pub exit_success: bool,
+    /// `READY`-Wert nach dem Aufruf (`1` = PVS-Handshake abgeschlossen).
+    pub ready: Option<String>,
+    /// `ERRORLEVEL`-Wert aus der zurückgelesenen INI (egal in welcher Sektion).
+    pub errorlevel: Option<String>,
+    /// Die INI, die wir an `MmoInfIm` übergeben haben.
+    pub sent_ini: String,
+    /// Inhalt der Austausch-INI NACH dem Aufruf (zeigt die Antwort von `MmoInfIm`).
+    pub ini_after: String,
+    /// Dateinamen (+ Größe) im Austauschordner nach dem Aufruf.
+    pub exchange_files: Vec<String>,
+}
+
+/// Führt genau einen Import-Aufruf aus und liest danach zurück, was hinterlassen
+/// wurde. Rein diagnostisch (keine Kaskade, keine Erfolgsbewertung).
+pub fn import_once_diagnostic(
+    import_program: &Path,
+    req: &ImportRequest,
+    exchange_dir: &Path,
+) -> Result<ImportDiagnostics> {
+    if !req.pdf_path.exists() {
+        return Err(ConnectorError::Vdds(format!(
+            "PDF nicht gefunden: {}",
+            req.pdf_path.display()
+        )));
+    }
+    let sent_ini = build_mmo_ini(req, &VddsTarget::from_mmi_ini());
+    let ini_path = write_exchange_ini(req, exchange_dir)?;
+    let status = std::process::Command::new(import_program)
+        .arg(&ini_path)
+        .status()
+        .map_err(|e| ConnectorError::Vdds(format!("PVS-Programm nicht startbar: {e}")))?;
+
+    let ini_after = match std::fs::read(&ini_path) {
+        Ok(bytes) => WINDOWS_1252.decode(&bytes).0.into_owned(),
+        Err(e) => format!("(INI nach Aufruf nicht lesbar: {e})"),
+    };
+    // READY/ERRORLEVEL aus der zurückgeschriebenen INI herausfischen.
+    let field = |key: &str| {
+        ini_after.lines().find_map(|line| {
+            let (k, v) = line.split_once('=')?;
+            k.trim().eq_ignore_ascii_case(key).then(|| v.trim().to_string())
+        })
+    };
+    let ready = field("READY");
+    let errorlevel = field("ERRORLEVEL");
+    let exchange_files = std::fs::read_dir(exchange_dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| {
+                    let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+                    format!("{} ({} B)", e.file_name().to_string_lossy(), size)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(ImportDiagnostics {
+        exit_code: status.code(),
+        exit_success: status.success(),
+        ready,
+        errorlevel,
+        sent_ini,
+        ini_after,
+        exchange_files,
+    })
 }
 
 /// Legt ein PDF über das PVS-Importmodul in die Akte — mit der Kaskade
@@ -192,12 +349,21 @@ pub fn parse_patient_from_request(ini_path: &Path) -> Result<PatientContext> {
     let bytes = std::fs::read(ini_path)?;
     let (text, _, _) = WINDOWS_1252.decode(&bytes);
     let ini = crate::vdds::ini::Ini::parse(&text);
-    let get = |k: &str| ini.get("PATIENT", k).unwrap_or("").to_string();
+    // Z1 kann die Patientensektion `[PATID]` oder `[PATIENT]` nennen und englische
+    // (LASTNAME/FIRSTNAME) wie deutsche (NAME/VORNAME) Feldnamen verwenden.
+    let first = |keys: &[&str]| -> String {
+        keys.iter()
+            .find_map(|k| {
+                let v = ini.get("PATID", k).or_else(|| ini.get("PATIENT", k))?;
+                (!v.trim().is_empty()).then(|| v.to_string())
+            })
+            .unwrap_or_default()
+    };
     Ok(PatientContext {
-        patient_id: get("PATID"),
-        last_name: get("NAME"),
-        first_name: get("VORNAME"),
-        birth_date: get("GEBDATUM"),
+        patient_id: first(&["PATID"]),
+        last_name: first(&["LASTNAME", "NAME"]),
+        first_name: first(&["FIRSTNAME", "VORNAME"]),
+        birth_date: first(&["BIRTHDATE", "BIRTHDAY", "GEBDATUM"]),
     })
 }
 
@@ -250,27 +416,52 @@ mod tests {
         assert!(!is_media_invocation("/pfad/gibtsnicht.ini"));
     }
 
-    #[test]
-    fn mmo_ini_enthaelt_patid_wenn_bekannt() {
-        let patient = patient_full();
-        let pdf = PathBuf::from("C:\\tmp\\anamnese.pdf");
-        let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Anamnese };
-        let ini = build_mmo_ini(&req);
-        assert!(ini.contains("PATID=4711"));
-        assert!(ini.contains("NAME=Mustermann"));
-        assert!(ini.contains("KATEGORIE=Anamnesebogen"));
-        assert!(ini.contains("anamnese.pdf"));
+    fn test_target() -> VddsTarget {
+        VddsTarget {
+            pvs_section: "PVS_ARCHIV".into(),
+            from_pvs_section: "CDP_Z1".into(),
+            bvs_section: "PRAXISHUB".into(),
+            prxnr: "1".into(),
+        }
     }
 
     #[test]
-    fn mmo_ini_ohne_patid_wenn_unbekannt() {
-        let patient = PatientContext { patient_id: String::new(), ..patient_full() };
+    fn mmo_ini_anamnese_schema_ist_vdds_konform() {
+        let patient = patient_full();
+        let pdf = PathBuf::from("C:\\tmp\\anamnese.pdf");
+        let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Anamnese };
+        let ini = build_mmo_ini(&req, &test_target());
+        // Kopf-/Patientensektion mit englischen Pflichtfeldern.
+        assert!(ini.contains("[PATID]"));
+        assert!(ini.contains("PATID=4711"));
+        assert!(ini.contains("LASTNAME=Mustermann"));
+        assert!(ini.contains("FIRSTNAME=Erika"));
+        assert!(ini.contains("PVS=PVS_ARCHIV"));
+        assert!(ini.contains("BVS=PRAXISHUB"));
+        assert!(ini.contains("FROMPVS=CDP_Z1"));
+        // Objektsektion mit direkter Dateiübergabe.
+        assert!(ini.contains("[MMOS]"));
+        assert!(ini.contains("COUNT=1"));
+        assert!(ini.contains("[MMO1]"));
+        assert!(ini.contains("TYPENR=10")); // Formular
+        assert!(ini.contains("EXT=PDF"));
+        assert!(ini.contains("COLORTYPE=LINEART"));
+        assert!(ini.contains("IMAGEDATA=C:\\tmp\\anamnese.pdf"));
+        // Alte (falsche) Schlüssel dürfen NICHT mehr vorkommen.
+        assert!(!ini.contains("KATEGORIE"));
+        assert!(!ini.contains("DATEI="));
+        assert!(!ini.contains("GEBDATUM"));
+    }
+
+    #[test]
+    fn mmo_ini_hkp_nutzt_typenr_14() {
+        let patient = patient_full();
         let pdf = PathBuf::from("C:\\tmp\\hkp.pdf");
         let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Hkp };
-        let ini = build_mmo_ini(&req);
-        assert!(!ini.contains("PATID="));
-        assert!(ini.contains("NAME=Mustermann"));
-        assert!(ini.contains("KATEGORIE=HKP"));
+        let ini = build_mmo_ini(&req, &test_target());
+        assert!(ini.contains("TYPENR=14")); // Heil- und Kostenplan
+        assert!(ini.contains("TYPE=Heil- und Kostenplan"));
+        assert!(ini.contains("EXT=PDF"));
     }
 
     // Die Kaskade über echte Prozessaufrufe testen wir mit /bin/true|false (Unix).
