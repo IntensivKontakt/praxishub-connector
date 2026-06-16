@@ -1,14 +1,32 @@
-//! `VDDS_MMI.INI` — lokale Selbst-Registrierung als BVS-Modul.
+//! `VDDS_MMI.INI` — lokale Selbst-Registrierung als BVS-Modul + Auslesen des
+//! PVS-Importmoduls (für den BVS→PVS-Dokumenten-Push, VDDS-media Stufe 6).
 //!
 //! Laut VDDS-Konzept trägt sich jede teilnehmende Software lokal in die
 //! `VDDS_MMI.INI` ein (freier Wettbewerb, keine Whitelist). Der PVS ruft dann
-//! generisch alle registrierten Module auf.
+//! generisch die registrierten Module auf.
+//!
+//! **Schema (an echter Z1/CGM-`VDDS_MMI.INI` verifiziert):** Die Datei führt die
+//! teilnehmenden Systeme NICHT über einen `[SYSTEMS]`-Index, sondern über die
+//! Index-Abschnitte `[PVS]` und `[BVS]` mit `NAME1=`, `NAME2=`-Schlüsseln, die je
+//! auf einen gleichnamigen Detail-Abschnitt zeigen. Beispiel (gekürzt):
+//! ```ini
+//! [PVS]
+//! NAME1=CDP_Z1
+//! ARCHIV=PVS_ARCHIV
+//! [PVS_ARCHIV]
+//! MMOINFIMPORT=C:\CGM\PRAXIS~1\Client\VDDS\MmoInfIm.exe   ; PVS-Importmodul
+//! [BVS]
+//! NAME1=CONVIS_PRAXISARCHIV
+//! NAME2=PAVDTQ_Sidexis
+//! ```
+//! Praxishub registriert sich als zusätzliches **BVS** (`[BVS] NAMEk=PRAXISHUB`
+//! + Detail-Abschnitt `[PRAXISHUB]`), damit Z1 uns bei geöffnetem Patienten den
+//! Kontext über `PATDATIMPORT` übergeben kann (Variante A). Den Dokumenten-Push
+//! in die Akte fahren wir, indem wir das vom PVS registrierte `MMOINFIMPORT`
+//! aufrufen — siehe [`pvs_import_program`].
 //!
 //! Die Datei ist **Windows-1252**-kodiert und liegt traditionell im Windows-
 //! Verzeichnis (`%WINDIR%\VDDS_MMI.INI`); Pfad per Env `VDDS_INI` überschreibbar.
-//!
-//! ⚠️ Schema unten ist eine fundierte Annäherung — gegen Spec + echte Z1-INI
-//! verifizieren (PRA-15, Prüfpunkt 1: „Wird unser Modul sauber aufgerufen?").
 
 use crate::error::Result;
 use encoding_rs::WINDOWS_1252;
@@ -16,8 +34,14 @@ use std::path::{Path, PathBuf};
 
 /// Abschnittsname unseres Moduls (freie Namen-ID).
 pub const SECTION: &str = "PRAXISHUB";
-/// Index-Abschnitt, der alle teilnehmenden Systeme auflistet.
-const SYSTEMS: &str = "SYSTEMS";
+/// Index-Abschnitt der Bildverwaltungssysteme — hier tragen wir uns ein.
+const BVS_INDEX: &str = "BVS";
+/// Index-Abschnitt der Praxisverwaltungssysteme (Z1) — hier steht `ARCHIV=…`.
+const PVS_INDEX: &str = "PVS";
+/// Altbestand aus v0.1.x (fälschlich `[SYSTEMS]`); beim Deregistrieren miträumen.
+const LEGACY_SYSTEMS: &str = "SYSTEMS";
+/// VDDS-media-Schnittstellenversion, die wir bedienen (NICHT die App-Version).
+const MEDIA_VERSION: &str = "1.3";
 
 pub struct VddsRegistration {
     /// Vollpfad zur ausführbaren Media-Handler-.exe (vom PVS aufgerufen).
@@ -81,28 +105,52 @@ pub fn is_registered(ini_path: &Path) -> Result<bool> {
     Ok(read_ini(ini_path)?.has_section(SECTION))
 }
 
+/// Liest das vom PVS registrierte **Importmodul** (`MMOINFIMPORT`) aus einer
+/// echten `VDDS_MMI.INI`: `[PVS].ARCHIV` zeigt auf den Archiv-Abschnitt, dort
+/// steht `MMOINFIMPORT=…`. Genau dieses Programm rufen wir für den
+/// Dokumenten-Push in die Z1-Akte auf. `Ok(None)` = Z1 bietet keinen Info-Import.
+pub fn read_pvs_import_program(ini_path: &Path) -> Result<Option<PathBuf>> {
+    Ok(pvs_import_program(&read_ini(ini_path)?))
+}
+
 // ── reine In-Memory-Logik (unit-testbar) ─────────────────────────────────────
 
 pub fn register_in(ini: &mut Ini, reg: &VddsRegistration) {
-    // Im [SYSTEMS]-Index registrieren (nächste freie Nummer), falls noch nicht da.
-    if ini.systems_index_of(SECTION).is_none() {
-        let next = ini.next_systems_index();
-        ini.set(SYSTEMS, &next.to_string(), SECTION);
+    // Im [BVS]-Index registrieren (nächster freier NAMEk), falls noch nicht da.
+    if ini.indexed_key_for(BVS_INDEX, SECTION).is_none() {
+        let key = ini.next_indexed_key(BVS_INDEX);
+        ini.set(BVS_INDEX, &key, SECTION);
     }
     let prog = reg.program_path.to_string_lossy();
     let dir = reg.install_dir.to_string_lossy();
-    ini.set(SECTION, "Name", "Praxishub Connector");
-    ini.set(SECTION, "Programm", &prog);
-    ini.set(SECTION, "Pfad", &dir);
-    ini.set(SECTION, "BVS", "1");
-    ini.set(SECTION, "PVS", "0");
-    ini.set(SECTION, "MMOID", SECTION);
-    ini.set(SECTION, "Version", env!("CARGO_PKG_VERSION"));
+    // Detail-Abschnitt als BVS-Modul. PATDATIMPORT = unsere .exe, die Z1 bei
+    // geöffnetem Patienten mit dem Patientenkontext aufruft (Variante A).
+    ini.set(SECTION, "NAME", "Praxishub Connector");
+    ini.set(SECTION, "PATDATIMPORT", &prog);
+    ini.set(SECTION, "PATDATIMPORT_OS", "1");
+    ini.set(SECTION, "PATDATIMPORT_EVENT", "");
+    ini.set(SECTION, "PFAD", &dir);
+    ini.set(SECTION, "STAGES", "16"); // Patientenübergabe (1) + Info-Import-Push (6)
+    ini.set(SECTION, "VERSION", MEDIA_VERSION);
 }
 
 pub fn unregister_in(ini: &mut Ini) {
-    ini.remove_systems_index(SECTION);
+    ini.remove_indexed_value(BVS_INDEX, SECTION);
+    ini.remove_indexed_value(PVS_INDEX, SECTION); // falls je versehentlich als PVS
+    ini.remove_indexed_value(LEGACY_SYSTEMS, SECTION); // Altbestand v0.1.x
     ini.remove_section(SECTION);
+}
+
+/// Ermittelt das PVS-Importmodul (`MMOINFIMPORT`) aus einer geparsten INI.
+pub fn pvs_import_program(ini: &Ini) -> Option<PathBuf> {
+    let archiv = ini.get(PVS_INDEX, "ARCHIV")?;
+    let prog = ini.get(archiv, "MMOINFIMPORT")?;
+    let prog = prog.trim();
+    if prog.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(prog))
+    }
 }
 
 // ── Minimaler INI-Parser (Reihenfolge-erhaltend) ─────────────────────────────
@@ -192,32 +240,38 @@ impl Ini {
         self.sections.len() != before
     }
 
-    /// Numerischer Schlüssel im [SYSTEMS]-Index, dessen Wert == `value`.
-    fn systems_index_of(&self, value: &str) -> Option<u32> {
-        let sec = self.sections.iter().find(|s| s.name.eq_ignore_ascii_case(SYSTEMS))?;
+    /// Schlüssel im Index-Abschnitt (`NAME1`, `NAME2`, …), dessen Wert == `value`.
+    fn indexed_key_for(&self, index: &str, value: &str) -> Option<String> {
+        let sec = self.sections.iter().find(|s| s.name.eq_ignore_ascii_case(index))?;
         sec.entries
             .iter()
             .find(|(_, v)| v.eq_ignore_ascii_case(value))
-            .and_then(|(k, _)| k.parse().ok())
+            .map(|(k, _)| k.clone())
     }
 
-    fn next_systems_index(&self) -> u32 {
-        self.sections
+    /// Nächster freier `NAMEk`-Schlüssel im Index-Abschnitt (z. B. `NAME3`).
+    fn next_indexed_key(&self, index: &str) -> String {
+        let max = self
+            .sections
             .iter()
-            .find(|s| s.name.eq_ignore_ascii_case(SYSTEMS))
+            .find(|s| s.name.eq_ignore_ascii_case(index))
             .map(|sec| {
                 sec.entries
                     .iter()
-                    .filter_map(|(k, _)| k.parse::<u32>().ok())
+                    .filter_map(|(k, _)| {
+                        let up = k.to_ascii_uppercase();
+                        up.strip_prefix("NAME").and_then(|n| n.parse::<u32>().ok())
+                    })
                     .max()
-                    .map(|m| m + 1)
-                    .unwrap_or(1)
+                    .unwrap_or(0)
             })
-            .unwrap_or(1)
+            .unwrap_or(0);
+        format!("NAME{}", max + 1)
     }
 
-    fn remove_systems_index(&mut self, value: &str) {
-        if let Some(sec) = self.sections.iter_mut().find(|s| s.name.eq_ignore_ascii_case(SYSTEMS)) {
+    /// Entfernt aus einem Index-Abschnitt den Eintrag mit Wert == `value`.
+    fn remove_indexed_value(&mut self, index: &str, value: &str) {
+        if let Some(sec) = self.sections.iter_mut().find(|s| s.name.eq_ignore_ascii_case(index)) {
             sec.entries.retain(|(_, v)| !v.eq_ignore_ascii_case(value));
         }
     }
@@ -227,6 +281,22 @@ impl Ini {
 mod tests {
     use super::*;
 
+    /// Gekürzter, aber struktur-echter Auszug einer Z1/CGM-`VDDS_MMI.INI`.
+    const Z1_INI: &str = "[PVS]\r\n\
+NAME1=CDP_Z1\r\n\
+ARCHIV=PVS_ARCHIV\r\n\
+[CDP_Z1]\r\n\
+NAME=CompuDENT Z1\r\n\
+[PVS_ARCHIV]\r\n\
+NAME=PraxisArchiv - ConVis\r\n\
+MMOINFIMPORT=C:\\CGM\\PRAXIS~1\\Client\\VDDS\\MmoInfIm.exe\r\n\
+STAGES=123456\r\n\
+[BVS]\r\n\
+NAME1=CONVIS_PRAXISARCHIV\r\n\
+NAME2=PAVDTQ_Sidexis\r\n\
+[CONVIS_PRAXISARCHIV]\r\n\
+NAME=Erfassung über PraxisArchiv - ConVis\r\n";
+
     fn reg() -> VddsRegistration {
         VddsRegistration {
             program_path: PathBuf::from("C:\\Apps\\praxishub-connector.exe"),
@@ -235,44 +305,72 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_erhaelt_eintraege() {
-        let text = "[SYSTEMS]\r\n1=FOO\r\n[FOO]\r\nName=Foo\r\n";
-        let ini = Ini::parse(text);
-        assert_eq!(ini.get("FOO", "Name"), Some("Foo"));
-        assert_eq!(ini.get("SYSTEMS", "1"), Some("FOO"));
+    fn liest_mmoinfimport_aus_echter_z1_ini() {
+        let ini = Ini::parse(Z1_INI);
+        assert_eq!(
+            pvs_import_program(&ini),
+            Some(PathBuf::from("C:\\CGM\\PRAXIS~1\\Client\\VDDS\\MmoInfIm.exe"))
+        );
     }
 
     #[test]
-    fn register_fuegt_index_und_section_hinzu() {
-        let mut ini = Ini::parse("[SYSTEMS]\r\n1=FOO\r\n[FOO]\r\nName=Foo\r\n");
+    fn register_traegt_bvs_und_detailsektion_ein() {
+        let mut ini = Ini::parse(Z1_INI);
         register_in(&mut ini, &reg());
+        // nächster freier NAMEk im [BVS]-Index ist NAME3
+        assert_eq!(ini.indexed_key_for(BVS_INDEX, SECTION).as_deref(), Some("NAME3"));
+        assert_eq!(ini.get(BVS_INDEX, "NAME3"), Some(SECTION));
         assert!(ini.has_section(SECTION));
-        assert_eq!(ini.get(SECTION, "BVS"), Some("1"));
-        assert_eq!(ini.systems_index_of(SECTION), Some(2)); // nächste freie Nummer
+        assert_eq!(
+            ini.get(SECTION, "PATDATIMPORT"),
+            Some("C:\\Apps\\praxishub-connector.exe")
+        );
+        assert_eq!(ini.get(SECTION, "VERSION"), Some(MEDIA_VERSION));
+        // bestehende Z1-Einträge bleiben unangetastet
+        assert_eq!(ini.get(BVS_INDEX, "NAME1"), Some("CONVIS_PRAXISARCHIV"));
+        assert_eq!(pvs_import_program(&ini).is_some(), true);
     }
 
     #[test]
     fn register_ist_idempotent() {
-        let mut ini = Ini::default();
+        let mut ini = Ini::parse(Z1_INI);
         register_in(&mut ini, &reg());
         register_in(&mut ini, &reg());
-        // genau ein Index-Eintrag für PRAXISHUB
-        let count = Ini::parse(&ini.to_text())
+        // genau ein Index-Eintrag, der auf PRAXISHUB zeigt
+        let count = ini
             .sections
             .iter()
-            .find(|s| s.name == SYSTEMS)
+            .find(|s| s.name == BVS_INDEX)
             .map(|s| s.entries.iter().filter(|(_, v)| v == SECTION).count())
             .unwrap_or(0);
         assert_eq!(count, 1);
     }
 
     #[test]
-    fn unregister_entfernt_alles() {
+    fn register_ohne_vorhandenen_bvs_index_legt_name1_an() {
         let mut ini = Ini::default();
+        register_in(&mut ini, &reg());
+        assert_eq!(ini.get(BVS_INDEX, "NAME1"), Some(SECTION));
+        assert!(ini.has_section(SECTION));
+    }
+
+    #[test]
+    fn unregister_entfernt_index_und_section() {
+        let mut ini = Ini::parse(Z1_INI);
         register_in(&mut ini, &reg());
         unregister_in(&mut ini);
         assert!(!ini.has_section(SECTION));
-        assert_eq!(ini.systems_index_of(SECTION), None);
+        assert_eq!(ini.indexed_key_for(BVS_INDEX, SECTION), None);
+        // fremde Einträge unberührt
+        assert_eq!(ini.get(BVS_INDEX, "NAME1"), Some("CONVIS_PRAXISARCHIV"));
+    }
+
+    #[test]
+    fn unregister_raeumt_legacy_systems_eintrag() {
+        let mut ini = Ini::parse("[SYSTEMS]\r\n1=PRAXISHUB\r\n[PRAXISHUB]\r\nName=alt\r\n");
+        unregister_in(&mut ini);
+        assert!(!ini.has_section(SECTION));
+        assert_eq!(ini.indexed_key_for(LEGACY_SYSTEMS, SECTION), None);
     }
 
     #[test]

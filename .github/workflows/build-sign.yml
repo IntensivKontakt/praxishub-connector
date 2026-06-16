@@ -9,11 +9,19 @@ name: Build & Sign (Release)
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Release-Tag (z. B. v0.2.0). Gesetzt = signierten Installer als
+          öffentliches GitHub-Release veröffentlichen (Tag wird am gewählten
+          Branch-Stand erzeugt). Leer = nur bauen/signieren ohne Release.
+        required: false
+        default: ""
 
 permissions:
   id-token: write
-  contents: read
+  contents: write # für das Veröffentlichen des GitHub-Release bei Tag-Push
 
 jobs:
   build:
@@ -96,3 +104,19 @@ jobs:
           path: |
             target/release/bundle/nsis/*.exe
             target/release/bundle/nsis/*.sig
+
+      # Signierten Installer als öffentliches GitHub-Release veröffentlichen →
+      # stabile, öffentlich herunterladbare URL. Bei Tag-Push (v*) automatisch;
+      # per workflow_dispatch nur, wenn ein `tag` angegeben wurde (Tag wird dann
+      # am gewählten Branch-Stand erzeugt).
+      - name: GitHub-Release veröffentlichen
+        if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          files: |
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/nsis/*.sig
+          fail_on_unmatched_files: true
+          generate_release_notes: true
