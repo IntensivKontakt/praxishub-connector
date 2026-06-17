@@ -144,8 +144,36 @@ impl VddsTarget {
 /// (siehe [`handle_export_request`]).
 pub fn build_mmo_ini(req: &ImportRequest, target: &VddsTarget, mmoid: &str) -> String {
     let p = req.patient;
-    let (type_text, typenr) = req.kind.media_type();
-    let date = chrono::Local::now().format("%Y%m%d").to_string(); // CCYYMMDD
+    let (def_type, def_typenr) = req.kind.media_type();
+
+    // ── DIAGNOSE-OVERRIDES (Z1-Pilot) ──────────────────────────────────────────
+    // ConVis crasht in CGData.Convert (String.Substring out-of-range) beim Parsen
+    // eines [MMO1]-Feldes → ERRORLEVEL=12. Um das offending Feld OHNE Neu-Build zu
+    // isolieren, lässt sich jedes Feld per Env-Var setzen; leerer Wert bei
+    // COLORTYPE/COMMENT/TIME lässt die Zeile WEG. In Produktion sind alle Vars
+    // ungesetzt → die (spec-konformen) Defaults greifen.
+    let diag = |k: &str| std::env::var(k).ok();
+    let type_text = diag("PRAXISHUB_DIAG_TYPE")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| def_type.to_string());
+    let typenr = diag("PRAXISHUB_DIAG_TYPENR")
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(def_typenr);
+    let ext = diag("PRAXISHUB_DIAG_EXT")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "PDF".to_string());
+    let colortype = diag("PRAXISHUB_DIAG_COLORTYPE").unwrap_or_else(|| "LINEART".to_string());
+    // Default jetzt ASCII (kein Umlaut) — falls CGData.Convert über das „ü" stolpert.
+    let comment = diag("PRAXISHUB_DIAG_COMMENT").unwrap_or_else(|| "Praxishub".to_string());
+    // TIME neu als Default (HH:MM, Tabelle 7 „empfohlen") — falls das fehlende Feld
+    // den Substring-Crash auslöst.
+    let time = diag("PRAXISHUB_DIAG_TIME")
+        .unwrap_or_else(|| chrono::Local::now().format("%H:%M").to_string());
+    let date = diag("PRAXISHUB_DIAG_DATE")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| chrono::Local::now().format("%Y%m%d").to_string()); // CCYYMMDD
+    // ───────────────────────────────────────────────────────────────────────────
+
     let mut s = String::new();
     // Kopf-/Patientensektion (Tabelle 5).
     s.push_str("[PATID]\r\n");
@@ -167,10 +195,17 @@ pub fn build_mmo_ini(req: &ImportRequest, target: &VddsTarget, mmoid: &str) -> S
     s.push_str(&format!("PRXNR={}\r\n", target.prxnr));
     s.push_str(&format!("TYPE={type_text}\r\n"));
     s.push_str(&format!("TYPENR={typenr}\r\n"));
-    s.push_str("EXT=PDF\r\n");
-    s.push_str("COLORTYPE=LINEART\r\n");
+    s.push_str(&format!("EXT={ext}\r\n"));
+    if !colortype.is_empty() {
+        s.push_str(&format!("COLORTYPE={colortype}\r\n"));
+    }
     s.push_str(&format!("DATE={date}\r\n"));
-    s.push_str("COMMENT=Erstellt über Praxishub\r\n");
+    if !time.is_empty() {
+        s.push_str(&format!("TIME={time}\r\n"));
+    }
+    if !comment.is_empty() {
+        s.push_str(&format!("COMMENT={comment}\r\n"));
+    }
     // KEIN IMAGEDATA — der PVS pullt die Datei per MMOEXPORT (s. Doc-Kommentar).
     s
 }
