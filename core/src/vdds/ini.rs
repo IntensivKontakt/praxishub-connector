@@ -115,14 +115,63 @@ pub fn read_pvs_import_program(ini_path: &Path) -> Result<Option<PathBuf>> {
 
 // ── reine In-Memory-Logik (unit-testbar) ─────────────────────────────────────
 
+/// Wandelt einen Pfad in seinen 8.3-Kurznamen (ohne Leerzeichen), soweit möglich.
+///
+/// Nötig, weil VDDS-Partner unsere registrierten Callbacks (`PATDATIMPORT`,
+/// `MMOEXPORT`) als bloßen, **unquotierten** Kommandozeilen-String starten — ein
+/// Pfad mit Leerzeichen würde am Space zerteilt und der Connector nie aufgerufen.
+/// Der 8.3-Kurzname (`…\PRAXIS~1\…`) ist leerzeichenfrei und damit robust.
+///
+/// `GetShortPathNameW` liest die Kurznamen aus dem Dateisystem — der Pfad muss
+/// also existieren (bei der Registrierung läuft die .exe ja gerade). Schlägt die
+/// Umwandlung fehl (Pfad weg, Laufwerk ohne 8.3-Unterstützung), bleibt der
+/// Originalpfad erhalten — schlechter als ein Kurzname, aber besser als leer.
+#[cfg(windows)]
+fn short_path(path: &Path) -> PathBuf {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // Erst die nötige Puffergröße ermitteln (inkl. Null-Terminator).
+    // SAFETY: `wide` ist ein gültiger, null-terminierter UTF-16-Puffer.
+    let needed = unsafe { GetShortPathNameW(wide.as_ptr(), std::ptr::null_mut(), 0) };
+    if needed == 0 {
+        return path.to_path_buf();
+    }
+    let mut buf = vec![0u16; needed as usize];
+    // SAFETY: `buf` fasst `needed` u16; Eingabe weiterhin gültig/null-terminiert.
+    let written = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), needed) };
+    if written == 0 || written >= needed {
+        return path.to_path_buf();
+    }
+    PathBuf::from(OsString::from_wide(&buf[..written as usize]))
+}
+
+/// Auf Nicht-Windows (Dev/Mac) gibt es keine 8.3-Namen — Pfad unverändert.
+#[cfg(not(windows))]
+fn short_path(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
 pub fn register_in(ini: &mut Ini, reg: &VddsRegistration) {
     // Im [BVS]-Index registrieren (nächster freier NAMEk), falls noch nicht da.
     if ini.indexed_key_for(BVS_INDEX, SECTION).is_none() {
         let key = ini.next_indexed_key(BVS_INDEX);
         ini.set(BVS_INDEX, &key, SECTION);
     }
-    let prog = reg.program_path.to_string_lossy();
-    let dir = reg.install_dir.to_string_lossy();
+    // 8.3-Kurzname statt Vollpfad: der PVS ruft PATDATIMPORT/MMOEXPORT als rohen,
+    // UNQUOTIERTEN Kommandozeilen-String auf. Ein Pfad mit Leerzeichen (z. B.
+    // `…\Praxishub Connector\…`) würde am Space zerteilt → Connector startet nie.
+    // `PRAXIS~1\…` umgeht das (siehe [`short_path`]).
+    let prog_short = short_path(&reg.program_path);
+    let dir_short = short_path(&reg.install_dir);
+    let prog = prog_short.to_string_lossy();
+    let dir = dir_short.to_string_lossy();
     // Detail-Abschnitt als BVS-Modul. PATDATIMPORT = unsere .exe, die Z1 bei
     // geöffnetem Patienten mit dem Patientenkontext aufruft (Variante A).
     ini.set(SECTION, "NAME", "Praxishub Connector");
