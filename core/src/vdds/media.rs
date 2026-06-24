@@ -394,9 +394,29 @@ pub fn file_document(
 // ── Inbound: vom PVS als Media-Handler aufgerufen ────────────────────────────
 
 /// Erkennt, ob ein CLI-Argument ein VDDS-media-Aufruf ist: Pfad auf eine
-/// existierende `.ini`-Datei (der PVS ruft unser registriertes Modul so auf).
+/// existierende Austauschdatei mit einer bekannten VDDS-Sektion.
+///
+/// **WICHTIG — nicht auf die `.ini`-Endung fixen.** Der PVS ruft unsere als BVS
+/// registrierten Callbacks je nach Stufe mit unterschiedlichen Endungen auf: CGM/
+/// ConVis `MmoInfIm` übergibt für den **MMOEXPORT-Pull** eine **`.tmp`**-Datei
+/// (z. B. `MMExxxx.tmp` mit `[MMOIDS]`) und wartet dann auf `READY`/`ERRORLEVEL`.
+/// Erkennen wir die `.tmp` nicht, fällt `main.rs` in die GUI (`run()`), antwortet
+/// nie → der PVS hängt ewig („Bitte warten…") und ruft erneut auf → Fenster-Sturm.
+/// Darum identifizieren wir den Aufruf am **Inhalt** (Windows-1252), endungs-egal.
 pub fn is_media_invocation(arg: &str) -> bool {
-    arg.to_ascii_lowercase().ends_with(".ini") && Path::new(arg).is_file()
+    let path = Path::new(arg);
+    if !path.is_file() {
+        return false;
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let (text, _, _) = WINDOWS_1252.decode(&bytes);
+    let up = text.to_ascii_uppercase();
+    up.contains("[MMOIDS]")
+        || up.contains("[PATID]")
+        || up.contains("[PATIENT]")
+        || up.contains("[MMOS]")
 }
 
 /// Kanonischer Dateiname der zwischengelagerten Dokumentkopie zu einer `MMOID`.
@@ -560,6 +580,31 @@ mod tests {
     fn erkennt_keinen_media_aufruf_bei_flags() {
         assert!(!is_media_invocation("--autostart"));
         assert!(!is_media_invocation("/pfad/gibtsnicht.ini"));
+    }
+
+    #[test]
+    fn erkennt_vdds_callback_auch_als_tmp_per_inhalt() {
+        // CGM/ConVis `MmoInfIm` ruft den MMOEXPORT-Callback mit einer .tmp-Datei auf.
+        // Diese MUSS als Media-Aufruf erkannt werden — sonst Hänger + Fenster-Sturm.
+        let dir = std::env::temp_dir().join("praxishub_test_tmp_invocation");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = dir.join("MME505F.tmp");
+        let content = "[MMOIDS]\r\nCOUNT=1\r\nMMOID1=PHTEST\r\nREADY=0\r\nERRORLEVEL=0\r\n";
+        let (bytes, _, _) = WINDOWS_1252.encode(content);
+        std::fs::write(&tmp, &bytes).unwrap();
+        assert!(is_media_invocation(tmp.to_str().unwrap()), ".tmp mit [MMOIDS] muss erkannt werden");
+
+        // Patientenkontext-Callback (.tmp mit [PATIENT]) ebenso.
+        let pat = dir.join("MME1234.tmp");
+        std::fs::write(&pat, b"[PATIENT]\r\nPATID=4711\r\n").unwrap();
+        assert!(is_media_invocation(pat.to_str().unwrap()));
+
+        // Eine beliebige Datei OHNE VDDS-Sektion darf NICHT erkannt werden.
+        let other = dir.join("random.tmp");
+        std::fs::write(&other, b"hello world, keine VDDS-Datei").unwrap();
+        assert!(!is_media_invocation(other.to_str().unwrap()));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn test_target() -> VddsTarget {
