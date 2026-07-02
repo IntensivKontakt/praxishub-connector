@@ -54,9 +54,16 @@ pub struct PendingDocument {
     pub last_name: String,
     #[serde(default)]
     pub first_name: String,
-    /// Geburtsdatum `TT.MM.JJJJ`.
+    /// Geburtsdatum. Das Backend liefert es im Z1-Format `JJJJMMTT`; die
+    /// Zuordnung normalisiert ohnehin formatunabhängig (siehe [`crate::matching`]).
     #[serde(default)]
     pub birth_date: String,
+    /// Postleitzahl aus dem Anamnese-Formular — Tiebreaker bei Namensvettern.
+    #[serde(default)]
+    pub zip: String,
+    /// E-Mail aus dem Anamnese-Formular — Tiebreaker bei Namensvettern.
+    #[serde(default)]
+    pub email: String,
     /// Das abzulegende PDF, Base64-kodiert.
     pub pdf_base64: String,
 }

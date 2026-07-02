@@ -14,6 +14,7 @@ pub mod crypto;
 pub mod documents;
 pub mod error;
 pub mod kim;
+pub mod matching;
 pub mod paths;
 pub mod status;
 pub mod vdds;
