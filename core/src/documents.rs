@@ -193,8 +193,12 @@ async fn file_one(
     Ok(outcome)
 }
 
-/// Passt das Dokument zum geöffneten Patienten? PATID-Gleichheit, sonst
-/// Name (case-insensitiv) + Geburtsdatum.
+/// Passt das Dokument zum geöffneten Patienten? Zuerst PATID-Gleichheit; sonst
+/// ein **starker** Namens-Match (Nachname + Vorname + Geburtsdatum, jeweils
+/// normalisiert). Der Vorname ist dabei Pflicht — sonst würden Zwillinge
+/// (gleicher Nachname, gleiches Geburtsdatum) vertauscht. Datumsformate
+/// (`TT.MM.JJJJ` vs. Z1-`JJJJMMTT`) und Umlaut-Schreibweisen werden über
+/// [`crate::matching`] angeglichen.
 fn matches_patient(doc: &PendingDocument, patient: &PatientContext) -> bool {
     if patient.has_patid()
         && !doc.patient_id.trim().is_empty()
@@ -202,10 +206,13 @@ fn matches_patient(doc: &PendingDocument, patient: &PatientContext) -> bool {
     {
         return true;
     }
-    !doc.last_name.trim().is_empty()
-        && doc.last_name.trim().eq_ignore_ascii_case(patient.last_name.trim())
-        && doc.birth_date.trim() == patient.birth_date.trim()
-        && !patient.birth_date.trim().is_empty()
+    let doc_key = crate::matching::PatientKey::new(&doc.last_name, &doc.first_name, &doc.birth_date);
+    let pat_key = crate::matching::PatientKey::new(
+        &patient.last_name,
+        &patient.first_name,
+        &patient.birth_date,
+    );
+    doc_key.matches(&pat_key)
 }
 
 /// Dateinamens-sichere Variante der Dokument-ID (nur a–z, 0–9, `-`, `_`).
@@ -233,6 +240,8 @@ mod tests {
             last_name: name.into(),
             first_name: "Erika".into(),
             birth_date: dob.into(),
+            zip: String::new(),
+            email: String::new(),
             pdf_base64: String::new(),
         }
     }
