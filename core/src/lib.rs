@@ -16,6 +16,7 @@ pub mod error;
 pub mod kim;
 pub mod matching;
 pub mod paths;
+pub mod patient_lookup;
 pub mod status;
 pub mod vdds;
 

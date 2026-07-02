@@ -168,8 +168,56 @@ async fn file_one(
     std::fs::create_dir_all(exchange_dir)?;
     std::fs::write(&pdf_path, &pdf_bytes)?;
 
+    // Effektive Z1-PATID bestimmen — Kaskade:
+    //   1. explizit übergeben (Variante A: der gerade in Z1 geöffnete Patient),
+    //   2. vom Backend mitgeliefert,
+    //   3. Weg A: aus Name+Vorname+Geburtsdatum über die PraxisArchiv-DB auflösen
+    //      (für Doctolib-Neupatienten, deren Z1-Nummer erst in der Praxis entsteht,
+    //      sobald die Karte „steckt").
+    let mut patient_id = patid_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| doc.patient_id.trim().to_string());
+
+    let mut matched_via_lookup = false;
+    if patient_id.is_empty() {
+        // Der Lookup startet einen kurzlebigen 32-bit-PowerShell-Prozess (COM) und
+        // ist damit blockierend → aus dem async-Kontext auslagern.
+        let (l, f, d, z) = (
+            doc.last_name.clone(),
+            doc.first_name.clone(),
+            doc.birth_date.clone(),
+            doc.zip.clone(),
+        );
+        let lookup = tokio::task::spawn_blocking(move || {
+            crate::patient_lookup::resolve_patient_id(&l, &f, &d, &z)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            crate::patient_lookup::PatientLookup::Unavailable(format!("Lookup-Task abgebrochen: {e}"))
+        });
+        use crate::patient_lookup::PatientLookup;
+        match lookup {
+            PatientLookup::Found(pid) => {
+                info!(id = %doc.id, patid = %pid, "Weg A: PatientenID über PraxisArchiv-DB aufgelöst");
+                patient_id = pid;
+                matched_via_lookup = true;
+            }
+            PatientLookup::NotFound => {
+                debug!(id = %doc.id, "Weg A: Patient noch nicht in PraxisArchiv — zurückgestellt")
+            }
+            PatientLookup::Ambiguous => {
+                warn!(id = %doc.id, "Weg A: mehrdeutiger Patient (Name/Geburtsdatum) — nicht abgelegt")
+            }
+            PatientLookup::Unavailable(reason) => {
+                debug!(id = %doc.id, %reason, "Weg A: Lookup nicht möglich — zurückgestellt")
+            }
+        }
+    }
+
     let patient = PatientContext {
-        patient_id: patid_override.unwrap_or(doc.patient_id.as_str()).to_string(),
+        patient_id,
         last_name: doc.last_name.clone(),
         first_name: doc.first_name.clone(),
         birth_date: doc.birth_date.clone(),
@@ -186,9 +234,16 @@ async fn file_one(
     let outcome = media::file_document(import_program, &req, exchange_dir, &mmoid)?;
 
     if let FilingOutcome::Filed { matched_by } = &outcome {
-        // Bei Name/Geburtsdatum-Match haben wir keine bestätigte Z1-PATID → leer.
-        let patid = if *matched_by == "patient_id" { patient.patient_id.as_str() } else { "" };
-        cloud.ack_document_filed(&doc.id, patid, matched_by).await?;
+        // Wurde die PATID per Weg-A-Lookup aufgelöst, das der Cloud so melden
+        // (sie bekommt trotzdem die getroffene PATID).
+        let effective_matched_by = if matched_via_lookup { "db_lookup" } else { *matched_by };
+        // Nur bei „name_dob" (ohne bestätigte PATID) bleibt die gemeldete PATID leer.
+        let patid = if effective_matched_by == "name_dob" {
+            ""
+        } else {
+            patient.patient_id.as_str()
+        };
+        cloud.ack_document_filed(&doc.id, patid, effective_matched_by).await?;
     }
     Ok(outcome)
 }
