@@ -33,26 +33,52 @@ wartende Anamnese unbeaufsichtigt in die richtige Akte zu legen, wenn das Backen
 ## Der Lookup-Weg (minimal)
 
 `IDBHandler` bietet **`DBQueryToFile`** — ein SQL-SELECT, dessen Ergebnis in eine
-Datei geschrieben wird. Damit ist der Lookup ein Dreisatz, ohne die
-Server-/Tabellen-Objekte zu navigieren:
+Datei geschrieben wird. **`DBQueryToFile` erwies sich als Sackgasse** (fester
+Diagnose-Dumper für System-CSV, kein Ad-hoc-SELECT — schreibt für eigene Queries
+nichts). Der funktionierende Weg (2026-07-02 **live an Patient 16006 verifiziert**,
+read-only) geht über `ITables`:
 
 1. `CoCreateInstance(CGPACS_DBClient.DBHandler)` → `IDBHandler`
-2. `ConnectAsAdm(user, password)` **oder** `Connect()` (Login-Kontext klären —
-   im Trace nutzt CGMs eigener Code „ForceLoginAsAdmin"; Credentials = Z1-Login).
-3. `DBQueryToFile(outPath, "SELECT PatientenID, Name, Vorname, Geburtsdatum, PLZ, ... FROM AG1_MasterData WHERE ArchiveID=1 AND ...", 256)`
-4. Ergebnisdatei parsen, mit [`core::matching`](../core/src/matching.rs)
-   (`normalize_name`/`normalize_birthdate`/`resolve_unique`) gegen den gesuchten
-   Patienten abgleichen → genau **eine** `PatientenID` oder „mehrdeutig"/„keiner".
-5. `Disconnect()`.
+2. **`Connect()`** — genügt, **ohne Credentials** (ambient Windows-/Z1-Kontext;
+   `hr=0`). `ConnectAsAdm("lwt","0707")` geht auch, ist aber nicht nötig.
+3. `GetServer(IID_IUnknown, &srv)` → `srv` = `IDBServer`-Objekt
+4. `srv` per QueryInterface auf **`ITables`** casten
+5. **`ITables.PerformCountSQL(sql, &scalar)`** — führt ein SQL aus und liefert den
+   **ersten Skalar** der ersten Zeile zurück. Damit zwei Nutzungen:
+   - `SELECT COUNT(*) FROM AG1_MasterData WHERE …` → Trefferzahl (Eindeutigkeit)
+   - `SELECT PatientenID FROM AG1_MasterData WHERE …` → **die PatientenID direkt**
+     (PatientenID ist numerisch, z. B. `16006` → passt in den `ulong`-Skalar)
+6. `Disconnect()`
 
-**Gegenprobe/Alternative:** `ISimplyArchive.CheckMD(externalMDID, &lMDID, &pMD)`
-löst eine bekannte `PatientenID` (externe MD-ID) → interne `lMDID` auf (das ist
-`SimpleAR::CheckMD('16006') → ID 5631` aus dem MmoInfIm-Trace). Nützlich zum
-Verifizieren, nicht für die Name→ID-Suche.
+**Lookup-Strategie (COUNT-then-fetch, nur `PerformCountSQL` nötig — kein
+Enumerator-RE):**
+1. `SELECT COUNT(*) … WHERE Name=? AND Vorname=? AND Geburtsdatum=?`
+   → **1**: `SELECT PatientenID … WHERE (dieselbe Bedingung)` = das Ergebnis.
+   → **0**: Patient (noch) nicht angelegt → zurückstellen, später erneut (Retry).
+   → **>1**: Tiebreaker — Bedingung um `PLZ=?` (dann `EMail`) erweitern und erneut
+     zählen; genau **1** → PatientenID holen, sonst **nicht ablegen** (mehrdeutig).
+   Das entspricht [`core::matching::resolve_unique`](../core/src/matching.rs), hier
+   aber durch progressive SQL-Einschränkung realisiert.
 
-> **Streng read-only halten:** Für den Lookup ausschließlich `SELECT` verwenden.
-> `IDBHandler`/`ISimplyArchive` können auch schreiben (Archive*, SaveMDRecovery*,
-> InsFolder …) — diese Methoden im Sidecar nicht aufrufen.
+**Verifizierte Fakten (Patient Groth/16006):**
+- `SELECT PatientenID … WHERE Name='Groth' AND Vorname='Nikolas'` → **16006**.
+- `WHERE Name='Groth'` allein → **4** Treffer → Vorname+Geburtsdatum sind Pflicht.
+- **Geburtsdatum-Spalte erwartet `TT.MM.JJJJ`:** `'23.02.2001'` → Treffer;
+  `'2001-02-23'` → `hr=0x80040E07` (Konvertierungsfehler). **Der Connector muss die
+  DOB fürs SQL als `TT.MM.JJJJ` formatieren** (Backend liefert `JJJJMMTT`).
+- `ArchiveID`-Filter nicht nötig (kann aber ergänzt werden: `ArchiveID=1`).
+
+> **SQL-Injection:** `Name`/`Vorname` sind patienten-getippt. `PerformCountSQL`
+> nimmt rohes SQL → im Sidecar **einfache Anführungszeichen verdoppeln** (`'`→`''`)
+> und die Werte in Quotes setzen. Keine anderen Zeichen durchreichen.
+
+> **Streng read-only halten:** Ausschließlich `SELECT`/`COUNT`. `ITables`/`IDBServer`/
+> `IDBHandler` können auch schreiben/löschen (Ins*/Upd*/Del*/ExecuteSQLCommand,
+> Archive*, SaveMDRecovery* …) — diese Methoden im Sidecar nicht deklarieren/aufrufen.
+
+**Gegenprobe:** `ISimplyArchive.CheckMD('16006', …)`/`ITables.GetMDID` lösen eine
+bekannte PatientenID → interne MD-ID auf (das ist `SimpleAR::CheckMD('16006')→5631`
+aus dem Trace). Für die Name→ID-Suche nicht nötig.
 
 ## `IDBHandler` — IID `{a80de17f-5d70-4ab9-b1d2-f70ebac27543}`
 
@@ -66,30 +92,46 @@ ProgID `CGPACS_DBClient.DBHandler`, CLSID `{F990A614-7D6F-460A-B143-6CCA469E6613
 | `ConnectEx` | `(BSTR sComputer, BSTR sUser, BSTR sPassword)` | Verbindung zu benanntem Server |
 | `ConnectAsAdm` | `(BSTR sUser, BSTR sPassword)` | Admin-Login (wie MmoInfIm) |
 | `Disconnect` | `()` | Trennen |
-| `DBQueryToFile` | `(BSTR sFileName, BSTR sSQLSelect, ushort ushElInBuffer)` | **SQL-SELECT → Datei** |
-| `GetServer` | `(GUID* riid, IUnknown** pServer)` | tieferer DB-Server-Zugriff (falls DBQueryToFile nicht reicht) |
-| `GetPatientDataEx` | `(ushort ArchiveID, long masterDataId, IUnknown** ppMasterDataRecord)` | Stammsatz per interner MD-ID |
-| `GetDBVersion` | `(short* dbVersion, short* dbRevision)` | Versions-Check |
-| `GetDBMS` | `(VARIANT* currentDBMS)` | DBMS-Typ ermitteln |
+| `GetServer` | `(GUID* riid, IUnknown** pServer)` (Slot 3) | liefert `IDBServer` (mit `IID_IUnknown` als riid) → daraus per QI `ITables` |
 
-(Vtable-Reihenfolge für die C#-Deklaration: die vollständige Funktionsliste steht
-in [`praxisarchiv-com-vtable.txt`](praxisarchiv-com-vtable.txt) — alle 76 Einträge in exakter Reihenfolge,
-inklusive der Schreibmethoden, die deklariert, aber NICHT aufgerufen werden. `vt29`
-= `VARIANT`/typ­abhängiger Zeiger, `vt30` = `BSTR`-artig; im Zweifel als `IntPtr`
-deklarieren, da für den Lookup nur `DBQueryToFile`/`Connect*`/`Disconnect` real
-aufgerufen werden.)
+**Slots (0-basiert, nach IUnknown):** `Connect`=0, `Disconnect`=1, `ConnectEx`=2,
+`GetServer`=3, `ConnectAsAdm`=48. Für den Lookup werden nur `Connect`/`GetServer`/
+`Disconnect` real deklariert/aufgerufen; alle anderen Slots als leere Stubs
+(`void sN();`) in exakter Vtable-Reihenfolge auffüllen. Vollständige Liste (76+47+53+39
+Methoden aller vier Interfaces) in [`praxisarchiv-com-vtable.txt`](praxisarchiv-com-vtable.txt).
+`vt29`=`VARIANT`/typabhängiger Zeiger, `vt30`=`BSTR`, `vt17`=`byte*`; ungenutzte
+Slots als `void` deklarieren, da nie aufgerufen.
+
+## `IDBServer` — IID `{b73d920a-ae53-4848-9be1-7adbcf4fa095}`
+
+Über `IDBHandler.GetServer(IID_IUnknown, &srv)`. 39 Methoden. `ExecuteSQLCommand(ulong
+ulID, BSTR sSQL)` führt Nicht-Query-SQL aus (schreibend — **nicht** verwenden). Für
+den read-only-Lookup nicht direkt nötig; wir casten `srv` weiter auf `ITables`.
+
+## `ITables` — IID `{22a5a712-bca0-4be3-aa80-500ef97cdccf}`
+
+Per QueryInterface auf dem `IDBServer`-Objekt (`srv as ITables`). 53 Methoden. Für
+den Lookup relevant:
+
+| Methode | Slot | Signatur | Zweck |
+|---|---|---|---|
+| `PerformCountSQL` | 50 | `(BSTR countCommand, ulong* scalarValue)` | **SQL → erster Skalar** (COUNT bzw. PatientenID) |
+| `GetTableEnumeratorSQL` | 0 | `(ulong dwID, BSTR sSQL, TblDesc* pTblDesc, IUnknown** ppEnum)` | voller Rowset-Enumerator (nur nötig, wenn mehrere Spalten/Zeilen gebraucht werden — Enumerator-Interface dann noch zu reversen) |
+| `GetMDID` | 41 | `(ulong dwID, ushort ushArchiveID, BSTR sExternalID, long* lID)` | PatientenID → interne MD-ID |
+| `GetExternalMDID` | 32 | `(ulong dwID, ushort ushArchiveID, long lMasterData, BSTR* sID)` | interne MD-ID → PatientenID |
+
+Für den Namens-Lookup reicht `PerformCountSQL` (COUNT-then-fetch, s. o.). Der
+Enumerator-Weg (`GetTableEnumeratorSQL`) wäre nötig, um mehrere Kandidaten inkl.
+PLZ/E-Mail in einem Rutsch zu lesen — für die Tiebreaker genügt aber progressives
+Einschränken per zusätzlicher `PerformCountSQL`.
 
 ## `ISimplyArchive` — IID `{64bc95da-0bd9-45fc-b7da-9b7e50ce0b69}`
 
-ProgID `CGPACS_DataSrc.SimplyArchive`. 47 Methoden. Für den Lookup relevant:
+ProgID `CGPACS_DataSrc.SimplyArchive`. 47 Methoden. Nur für die Gegenprobe relevant:
 
 | Methode | Signatur | Zweck |
 |---|---|---|
-| `Init` | `(ushort ushArchiveID)` | Archiv wählen (`1`) |
-| `UseAdmLogin` | `(bool c)` | Admin-Login aktivieren |
 | `CheckMD` | `(BSTR sMDID, long* lMDID, void** pMD)` | PatientenID (extern) → interne MD-ID |
-| `GetFolderID` | `(long lMDID, BSTR sFolder, ulong* ulFolderID)` | Ordner-ID (hier „VDDS-Importmodul") |
-| `Disconnect` | `()` | Trennen |
 
 ## Stammdaten-Felder (`AG1_MasterData`)
 
@@ -104,12 +146,18 @@ Primär-Match: **Nachname + Vorname + Geburtsdatum** (normalisiert). Bei
 Namensvettern entscheiden **PLZ**, dann **E-Mail**; bleibt es mehrdeutig →
 **nicht ablegen** (siehe `core::matching::resolve_unique`).
 
-## Offene Punkte vor dem ersten Live-Lookup
+## Status & verbleibende Schritte
 
-- **Login-Credentials/Modus:** `Connect()` vs. `ConnectAsAdm(user,pass)` —
-  welcher Weg headless trägt (der frühere Zerberus-Weg fauliegt den Live-Server;
-  `IDBHandler` ist ein anderer, DB-naher Pfad). Z1-Login des Users nutzbar, aber
-  **nicht dauerhaft speichern**.
-- **Exakte Spaltennamen + Ergebnisformat** von `DBQueryToFile` (Trenner, Encoding)
-  → am Testpatienten Groth/16006 verifizieren.
-- **ArchiveID** = `1` (aus dem Trace bestätigt).
+**Verifiziert (2026-07-02, live, read-only):** Login-Modus (`Connect()` ohne
+Credentials), COM-Kette, `PerformCountSQL`, Tabellen-/Spaltennamen, Datumsformat
+`TT.MM.JJJJ`, Name→PatientenID an Patient 16006. Kein Schreibzugriff, DB unverändert.
+
+**Noch zu bauen:**
+- **Sidecar `pa-lookup` (C#/.NET, x86):** die vier `[ComImport]`-Interfaces oben,
+  COUNT-then-fetch-Logik, JSON-I/O (stdin: Name/Vorname/GebDat/PLZ/Email; stdout:
+  PatientenID | `none` | `ambiguous`), `'`→`''`-Escaping. In der CI baubar (nur
+  vendored Bindings, kein PraxisArchiv nötig); live testbar auf dem Praxis-PC.
+- **Connector-Kaskade:** ruft das Sidecar für Dokumente ohne `patient_id`, füttert
+  das Ergebnis in die bestehende PATID-Push-Strecke.
+- **Produktions-Auth:** `Connect()` genügt (läuft im Kontext des angemeldeten,
+  PA-berechtigten Praxis-Nutzers) → keine PA-Credentials in der Config nötig.
