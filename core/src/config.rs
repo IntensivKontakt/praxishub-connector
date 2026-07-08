@@ -115,6 +115,10 @@ pub struct ConnectorConfig {
     /// Kartenstecken — nur nach empirischem Karten-Match-Test aktivieren.
     #[serde(default)]
     pub writeback_new_patient: bool,
+    /// Bei „c/o"-Adresszusatz (CO/co/c/o) zusätzlich `c/o <Adresse>` in die
+    /// Risikoanamnese (`PAT.ANAMNESE`) schreiben.
+    #[serde(default)]
+    pub writeback_co_to_risk: bool,
 }
 
 fn default_true() -> bool {
@@ -148,6 +152,7 @@ impl Default for ConnectorConfig {
             writeback_cave: false,
             writeback_anamnese: false,
             writeback_new_patient: false,
+            writeback_co_to_risk: false,
         }
     }
 }
@@ -234,5 +239,6 @@ impl ConnectorConfig {
             || self.writeback_cave
             || self.writeback_anamnese
             || self.writeback_new_patient
+            || self.writeback_co_to_risk
     }
 }

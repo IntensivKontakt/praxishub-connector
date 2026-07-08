@@ -38,6 +38,8 @@ pub struct ContactData {
     pub email: Option<String>,
     /// Straße **inkl. Hausnummer** (Z1 `ADR.STR` hält beides zusammen).
     pub street: Option<String>,
+    /// Adresszusatz → `ADR.ANSCHRIFTENZUSATZ` (z. B. „c/o Max Mustermann").
+    pub address_addendum: Option<String>,
     pub zip: Option<String>,
     pub city: Option<String>,
 }
@@ -60,6 +62,7 @@ pub struct WritebackReport {
     pub contact_updated: bool,
     pub address_updated: bool,
     pub cave_appended: usize,
+    pub co_appended: usize,
     pub anamnese_inserted: usize,
     /// Nicht ausgeführte Teile (Toggle aus, Feld zu lang, Adresse geteilt …).
     pub skipped: Vec<String>,
@@ -98,7 +101,8 @@ pub async fn apply_writeback(
 
     if !data.cave.is_empty() {
         if cfg.writeback_cave {
-            match append_cave(conn, &patnr, &data.cave).await {
+            let notes: Vec<String> = data.cave.iter().map(|c| format!("CAVE: {}", c.trim())).collect();
+            match append_risk_notes(conn, &patnr, &notes).await {
                 Ok(n) => report.cave_appended = n,
                 Err(e) => {
                     warn!(%patnr, error=%e, "CAVE-Rückschreiben fehlgeschlagen");
@@ -107,6 +111,20 @@ pub async fn apply_writeback(
             }
         } else {
             report.skipped.push("CAVE: Toggle aus".into());
+        }
+    }
+
+    // c/o-Adresszusatz aus der Aufnahme → Hinweis in die Risikoanamnese (eigenes Toggle).
+    if cfg.writeback_co_to_risk {
+        let addendum = data.contact.as_ref().and_then(|c| c.address_addendum.as_deref());
+        if let Some(note) = addendum.and_then(co_note) {
+            match append_risk_notes(conn, &patnr, &[note]).await {
+                Ok(n) => report.co_appended = n,
+                Err(e) => {
+                    warn!(%patnr, error=%e, "c/o-Risikoanamnese-Rückschreiben fehlgeschlagen");
+                    report.skipped.push(format!("c/o: {e}"));
+                }
+            }
         }
     }
 
@@ -126,7 +144,7 @@ pub async fn apply_writeback(
 
     info!(
         %patnr, contact=report.contact_updated, address=report.address_updated,
-        cave=report.cave_appended, anamnese=report.anamnese_inserted,
+        cave=report.cave_appended, co=report.co_appended, anamnese=report.anamnese_inserted,
         "Z1-Rückschreiben abgeschlossen"
     );
     Ok(report)
@@ -190,10 +208,15 @@ async fn write_contact(
         }
     }
     if cfg.writeback_address {
-        // Überschreibend: Straße/Hausnr., PLZ, Ort.
+        // Überschreibend: Straße/Hausnr., Adresszusatz, PLZ, Ort.
         if let Some(s) = contact.street.as_ref().filter(|s| !s.trim().is_empty()) {
             cols.push("STR");
             vals.push(s.clone());
+            address_written = true;
+        }
+        if let Some(z) = contact.address_addendum.as_ref().filter(|s| !s.trim().is_empty()) {
+            cols.push("ANSCHRIFTENZUSATZ");
+            vals.push(z.clone());
             address_written = true;
         }
         if let Some(z) = contact.zip.as_ref().filter(|s| !s.trim().is_empty()) {
@@ -243,46 +266,35 @@ async fn write_contact(
     Ok((contact_written, address_written))
 }
 
-/// Hängt CAVE-Einträge additiv an die Risikoanamnese (`PAT.ANAMNESE`) an — es
-/// wird **nie** gelöscht. Respektiert das `varchar(80)`-Limit; was nicht mehr
-/// passt, wird ausgelassen (und der Aufrufer im Report informiert).
-async fn append_cave(conn: &mut Z1Connection, patnr: &str, entries: &[String]) -> Result<usize> {
-    let (old, old_rinfo) = {
-        let old = conn
-            .scalar_string(
-                "SELECT ISNULL(ANAMNESE, '') FROM PAT WHERE LTRIM(RTRIM(PATNR)) = @P1",
-                &[&patnr],
-            )
-            .await?
-            .ok_or_else(|| ConnectorError::Z1Db(format!("PATNR {patnr} nicht gefunden")))?;
-        let rinfo = conn
-            .scalar_string(
-                "SELECT RINFO FROM PAT WHERE LTRIM(RTRIM(PATNR)) = @P1",
-                &[&patnr],
-            )
-            .await?;
-        (old, rinfo)
-    };
+/// Hängt fertig formatierte Hinweise (z. B. `"CAVE: Penicillin"` oder
+/// `"c/o Max Mustermann"`) additiv an die Risikoanamnese (`PAT.ANAMNESE`) an — es
+/// wird **nie** gelöscht, bereits Vorhandenes wird übersprungen (idempotent), und
+/// das `varchar(80)`-Limit wird respektiert (was nicht mehr passt, wird ausgelassen).
+async fn append_risk_notes(conn: &mut Z1Connection, patnr: &str, notes: &[String]) -> Result<usize> {
+    let old = conn
+        .scalar_string(
+            "SELECT ISNULL(ANAMNESE, '') FROM PAT WHERE LTRIM(RTRIM(PATNR)) = @P1",
+            &[&patnr],
+        )
+        .await?
+        .ok_or_else(|| ConnectorError::Z1Db(format!("PATNR {patnr} nicht gefunden")))?;
+    let old_rinfo = conn
+        .scalar_string(
+            "SELECT RINFO FROM PAT WHERE LTRIM(RTRIM(PATNR)) = @P1",
+            &[&patnr],
+        )
+        .await?;
 
     let mut text = old;
     let mut appended = 0usize;
-    for entry in entries {
-        let e = entry.trim();
-        if e.is_empty() {
-            continue;
+    for note in notes {
+        let n = note.trim();
+        if n.is_empty() || text.contains(n) {
+            continue; // leer oder schon vorhanden (idempotent gegen erneutes Senden)
         }
-        // Idempotent: schon vorhandenes CAVE nicht erneut anhängen (die Cloud könnte
-        // dasselbe in einem späteren Bündel mitschicken).
-        if text.contains(&format!("CAVE: {e}")) {
-            continue;
-        }
-        let addition = if text.is_empty() {
-            format!("CAVE: {e}")
-        } else {
-            format!(" | CAVE: {e}")
-        };
+        let addition = if text.is_empty() { n.to_string() } else { format!(" | {n}") };
         if text.len() + addition.len() > ANAMNESE_MAX {
-            warn!(%patnr, "CAVE-Eintrag passt nicht mehr in Risikoanamnese (80 Zeichen) — ausgelassen");
+            warn!(%patnr, "Risikoanamnese-Eintrag passt nicht mehr in 80 Zeichen — ausgelassen");
             break;
         }
         text.push_str(&addition);
@@ -300,6 +312,59 @@ async fn append_cave(conn: &mut Z1Connection, patnr: &str, entries: &[String]) -
     )
     .await?;
     Ok(appended)
+}
+
+/// ASCII-case-insensitive Suche; liefert den Byte-Index in `hay` (die gesuchten
+/// Marker sind rein ASCII → Treffer liegen immer auf Zeichengrenzen).
+fn find_ci(hay: &str, needle: &str) -> Option<usize> {
+    let (h, n) = (hay.as_bytes(), needle.as_bytes());
+    if n.is_empty() || h.len() < n.len() {
+        return None;
+    }
+    (0..=h.len() - n.len()).find(|&i| h[i..i + n.len()].eq_ignore_ascii_case(n))
+}
+
+/// Erkennt einen „care-of"-Marker (CO/co/c/o/c.o.) im Adresszusatz und liefert
+/// den normalisierten Hinweis `"c/o <Rest>"` für die Risikoanamnese — sonst `None`.
+fn co_note(addendum: &str) -> Option<String> {
+    let a = addendum.trim();
+    if a.is_empty() {
+        return None;
+    }
+    // Ersten Marker finden (Reihenfolge: spezifisch → allgemein).
+    let (start, mlen) = ["c/o", "c.o.", "co "]
+        .iter()
+        .find_map(|m| find_ci(a, m).map(|i| (i, m.len())))?;
+    let rest = a[start + mlen..]
+        .trim()
+        .trim_start_matches(|c: char| c == '/' || c == '.' || c == ' ')
+        .trim();
+    if rest.is_empty() {
+        return None; // bloßes „c/o"/„co" ohne Adresse → kein sinnvoller Hinweis
+    }
+    Some(format!("c/o {rest}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::co_note;
+
+    #[test]
+    fn co_marker_varianten() {
+        assert_eq!(co_note("c/o Max Mustermann").as_deref(), Some("c/o Max Mustermann"));
+        assert_eq!(co_note("co Pflegeheim Sonnenhof").as_deref(), Some("c/o Pflegeheim Sonnenhof"));
+        assert_eq!(co_note("CO Meier").as_deref(), Some("c/o Meier"));
+        assert_eq!(co_note("c.o. Schmidt").as_deref(), Some("c/o Schmidt"));
+        assert_eq!(co_note("Wohnung 5, c/o Krüger").as_deref(), Some("c/o Krüger"));
+    }
+
+    #[test]
+    fn kein_co_marker() {
+        assert_eq!(co_note(""), None);
+        assert_eq!(co_note("Hinterhaus"), None);
+        assert_eq!(co_note("Company GmbH"), None); // "co" nicht als Marker (kein "co ")
+        assert_eq!(co_note("c/o"), None); // ohne Adresse → None
+    }
 }
 
 /// Schreibt Krankenanamnese-Zeilen als `PATINFO`-Einträge (ART=1) — dasselbe
@@ -420,12 +485,14 @@ impl From<&PendingWriteback> for PatientWriteback {
             phone: w.phone.clone(),
             email: w.email.clone(),
             street: w.street.clone(),
+            address_addendum: w.address_addendum.clone(),
             zip: w.zip.clone(),
             city: w.city.clone(),
         };
         let has_contact = contact.phone.is_some()
             || contact.email.is_some()
             || contact.street.is_some()
+            || contact.address_addendum.is_some()
             || contact.zip.is_some()
             || contact.city.is_some();
         PatientWriteback {

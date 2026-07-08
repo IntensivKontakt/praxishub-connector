@@ -93,6 +93,9 @@ pub struct PendingWriteback {
     /// Straße inkl. Hausnummer.
     #[serde(default)]
     pub street: Option<String>,
+    /// Adresszusatz (z. B. „c/o …", Wohnung) → ADR.ANSCHRIFTENZUSATZ.
+    #[serde(default)]
+    pub address_addendum: Option<String>,
     #[serde(default)]
     pub zip: Option<String>,
     #[serde(default)]

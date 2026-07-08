@@ -37,6 +37,7 @@ interface ConnectorConfig {
   writeback_cave: boolean;
   writeback_anamnese: boolean;
   writeback_new_patient: boolean;
+  writeback_co_to_risk: boolean;
 }
 
 let cfg: ConnectorConfig = blankConfig();
@@ -65,6 +66,7 @@ function blankConfig(): ConnectorConfig {
     writeback_cave: false,
     writeback_anamnese: false,
     writeback_new_patient: false,
+    writeback_co_to_risk: false,
   };
 }
 
@@ -218,6 +220,7 @@ function collectFromWizard(): ConnectorConfig {
     writeback_cave: hasEl("writeback_cave") ? checked("writeback_cave") : cfg.writeback_cave,
     writeback_anamnese: hasEl("writeback_anamnese") ? checked("writeback_anamnese") : cfg.writeback_anamnese,
     writeback_new_patient: hasEl("writeback_new_patient") ? checked("writeback_new_patient") : cfg.writeback_new_patient,
+    writeback_co_to_risk: hasEl("writeback_co_to_risk") ? checked("writeback_co_to_risk") : cfg.writeback_co_to_risk,
   };
 }
 
@@ -364,6 +367,7 @@ function renderDashboard() {
       <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_contact" /> Kontaktdaten (Telefon/E-Mail) zurückschreiben</label>
       <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_address" /> Adresse überschreiben (Straße/PLZ/Ort)</label>
       <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_cave" /> CAVE/Allergien in Risikoanamnese</label>
+      <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_co_to_risk" /> Bei „c/o"-Adresszusatz Hinweis in Risikoanamnese</label>
       <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_anamnese" /> Krankenanamnese (PATINFO)</label>
       <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_new_patient" /> Neupatient anlegen <span class="hint">(Vorsicht: Dubletten-Risiko beim Kartenstecken)</span></label>
       <div class="actions"><button class="primary" id="save2">Speichern</button></div>
@@ -430,6 +434,7 @@ function applyConfig(c: ConnectorConfig) {
   setChecked("writeback_cave", c.writeback_cave);
   setChecked("writeback_anamnese", c.writeback_anamnese);
   setChecked("writeback_new_patient", c.writeback_new_patient);
+  setChecked("writeback_co_to_risk", c.writeback_co_to_risk);
 }
 
 async function onTestZ1() {
