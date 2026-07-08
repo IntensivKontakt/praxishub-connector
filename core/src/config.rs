@@ -115,8 +115,8 @@ pub struct ConnectorConfig {
     /// Kartenstecken — nur nach empirischem Karten-Match-Test aktivieren.
     #[serde(default)]
     pub writeback_new_patient: bool,
-    /// Bei „c/o"-Adresszusatz (CO/co/c/o) zusätzlich `c/o <Adresse>` in die
-    /// Risikoanamnese (`PAT.ANAMNESE`) schreiben.
+    /// Bei „c/o"-Adresszusatz (CO/co/c/o) den festen Hinweis `c/o Adresse`
+    /// (wortwörtlich, als Flag) in die Risikoanamnese (`PAT.ANAMNESE`) schreiben.
     #[serde(default)]
     pub writeback_co_to_risk: bool,
 }

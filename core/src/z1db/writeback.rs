@@ -324,25 +324,26 @@ fn find_ci(hay: &str, needle: &str) -> Option<usize> {
     (0..=h.len() - n.len()).find(|&i| h[i..i + n.len()].eq_ignore_ascii_case(n))
 }
 
-/// Erkennt einen „care-of"-Marker (CO/co/c/o/c.o.) im Adresszusatz und liefert
-/// den normalisierten Hinweis `"c/o <Rest>"` für die Risikoanamnese — sonst `None`.
+/// „co" als Care-of-Wort am Anfang (`co`, `co Meier`, `co.`) — aber NICHT als
+/// Teil eines Wortes (`Company`, `Cottbus`).
+fn starts_with_co(a: &str) -> bool {
+    let b = a.as_bytes();
+    b.len() >= 2
+        && b[0].eq_ignore_ascii_case(&b'c')
+        && b[1].eq_ignore_ascii_case(&b'o')
+        && (b.len() == 2 || !b[2].is_ascii_alphanumeric())
+}
+
+/// Erkennt einen „care-of"-Marker (CO/co/c/o/c.o.) im Adresszusatz. Bei einem
+/// Treffer wird **wortwörtlich** der feste Hinweis `"c/o Adresse"` als Flag in die
+/// Risikoanamnese geschrieben (NICHT die echte Adresse) — sonst `None`.
 fn co_note(addendum: &str) -> Option<String> {
     let a = addendum.trim();
     if a.is_empty() {
         return None;
     }
-    // Ersten Marker finden (Reihenfolge: spezifisch → allgemein).
-    let (start, mlen) = ["c/o", "c.o.", "co "]
-        .iter()
-        .find_map(|m| find_ci(a, m).map(|i| (i, m.len())))?;
-    let rest = a[start + mlen..]
-        .trim()
-        .trim_start_matches(|c: char| c == '/' || c == '.' || c == ' ')
-        .trim();
-    if rest.is_empty() {
-        return None; // bloßes „c/o"/„co" ohne Adresse → kein sinnvoller Hinweis
-    }
-    Some(format!("c/o {rest}"))
+    let found = find_ci(a, "c/o").is_some() || find_ci(a, "c.o.").is_some() || starts_with_co(a);
+    found.then(|| "c/o Adresse".to_string())
 }
 
 #[cfg(test)]
@@ -350,20 +351,18 @@ mod tests {
     use super::co_note;
 
     #[test]
-    fn co_marker_varianten() {
-        assert_eq!(co_note("c/o Max Mustermann").as_deref(), Some("c/o Max Mustermann"));
-        assert_eq!(co_note("co Pflegeheim Sonnenhof").as_deref(), Some("c/o Pflegeheim Sonnenhof"));
-        assert_eq!(co_note("CO Meier").as_deref(), Some("c/o Meier"));
-        assert_eq!(co_note("c.o. Schmidt").as_deref(), Some("c/o Schmidt"));
-        assert_eq!(co_note("Wohnung 5, c/o Krüger").as_deref(), Some("c/o Krüger"));
+    fn co_marker_setzt_festen_hinweis() {
+        // Immer wortwörtlich "c/o Adresse" (nicht die echte Adresse).
+        for s in ["c/o Max Mustermann", "co Pflegeheim", "CO Meier", "c.o. Schmidt", "Wohnung 5, c/o Krüger", "c/o", "co"] {
+            assert_eq!(co_note(s).as_deref(), Some("c/o Adresse"), "input: {s}");
+        }
     }
 
     #[test]
     fn kein_co_marker() {
-        assert_eq!(co_note(""), None);
-        assert_eq!(co_note("Hinterhaus"), None);
-        assert_eq!(co_note("Company GmbH"), None); // "co" nicht als Marker (kein "co ")
-        assert_eq!(co_note("c/o"), None); // ohne Adresse → None
+        for s in ["", "Hinterhaus", "Company GmbH", "Cottbus", "3. OG links"] {
+            assert_eq!(co_note(s), None, "input: {s}");
+        }
     }
 }
 
