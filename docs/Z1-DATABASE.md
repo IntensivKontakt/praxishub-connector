@@ -201,9 +201,13 @@ Config (`core/src/config.rs`, DPAPI-geschützt): `z1_db_server/database/user/pas
 `writeback_contact / _address / _cave / _anamnese / _new_patient`.
 Tauri-Commands: `test_z1db_connection`, `bootstrap_z1_readonly`.
 
-**Noch offen:** Datenquelle fürs Rückschreiben (Cloud-Route liefert `PatientWriteback`),
-Lese-Poller (EBZ-Status/HKP → Cloud), UI der Toggles, und die Neupatient-Anlage
-(NUMBERPOOL + Karten-Match-Test). Build/Test auf der Dev-Maschine (kein `cargo` am PVS).
+Cloud-Verdrahtung umgesetzt: `hkp.rs` (HKP-Poller EBZ→Cloud, `report_hkp_status`),
+`writeback.rs::spawn` (Cloud→Z1, mit Idempotenz-Store), `lookup.rs::resolve_patnr`
+(Name+Geb→PATNR). Beide Schleifen im Tauri-Lebenszyklus verdrahtet.
+
+**Noch offen:** Backend-Routen unter `/connector/z1/*` (hkp-status, writeback/pending
++ ack); UI der Toggles; Neupatient-Anlage (NUMBERPOOL + Karten-Match-Test); Build/Test
+auf der Dev-Maschine (kein `cargo` am PVS — ein paar `tiberius`-API-Details verifizieren).
 
 ## Sicherheit
 
