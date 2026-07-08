@@ -102,7 +102,7 @@ pub async fn apply_writeback(
     if !data.cave.is_empty() {
         if cfg.writeback_cave {
             let notes: Vec<String> = data.cave.iter().map(|c| format!("CAVE: {}", c.trim())).collect();
-            match append_risk_notes(conn, &patnr, &notes).await {
+            match append_risk_notes(conn, &patnr, &notes, Some("CAVE: s.h. Anamnese")).await {
                 Ok(n) => report.cave_appended = n,
                 Err(e) => {
                     warn!(%patnr, error=%e, "CAVE-Rückschreiben fehlgeschlagen");
@@ -118,7 +118,7 @@ pub async fn apply_writeback(
     if cfg.writeback_co_to_risk {
         let addendum = data.contact.as_ref().and_then(|c| c.address_addendum.as_deref());
         if let Some(note) = addendum.and_then(co_note) {
-            match append_risk_notes(conn, &patnr, &[note]).await {
+            match append_risk_notes(conn, &patnr, &[note], None).await {
                 Ok(n) => report.co_appended = n,
                 Err(e) => {
                     warn!(%patnr, error=%e, "c/o-Risikoanamnese-Rückschreiben fehlgeschlagen");
@@ -269,8 +269,19 @@ async fn write_contact(
 /// Hängt fertig formatierte Hinweise (z. B. `"CAVE: Penicillin"` oder
 /// `"c/o Max Mustermann"`) additiv an die Risikoanamnese (`PAT.ANAMNESE`) an — es
 /// wird **nie** gelöscht, bereits Vorhandenes wird übersprungen (idempotent), und
-/// das `varchar(80)`-Limit wird respektiert (was nicht mehr passt, wird ausgelassen).
-async fn append_risk_notes(conn: &mut Z1Connection, patnr: &str, notes: &[String]) -> Result<usize> {
+/// das `varchar(80)`-Limit wird respektiert.
+///
+/// `overflow_marker`: Passen NICHT alle frischen Hinweise ins Feld, wird — sofern
+/// gesetzt — statt Einzelteilen ein einzelner Sammelverweis geschrieben
+/// (z. B. `"CAVE: s.h. Anamnese"`); die Details stehen ohnehin im Anamnese-Tab.
+/// Ohne Marker (z. B. c/o) werden wie bisher so viele Hinweise wie möglich
+/// geschrieben, der Rest ausgelassen.
+async fn append_risk_notes(
+    conn: &mut Z1Connection,
+    patnr: &str,
+    notes: &[String],
+    overflow_marker: Option<&str>,
+) -> Result<usize> {
     let old = conn
         .scalar_string(
             "SELECT ISNULL(ANAMNESE, '') FROM PAT WHERE LTRIM(RTRIM(PATNR)) = @P1",
@@ -285,20 +296,55 @@ async fn append_risk_notes(conn: &mut Z1Connection, patnr: &str, notes: &[String
         )
         .await?;
 
-    let mut text = old;
-    let mut appended = 0usize;
-    for note in notes {
-        let n = note.trim();
-        if n.is_empty() || text.contains(n) {
-            continue; // leer oder schon vorhanden (idempotent gegen erneutes Senden)
-        }
-        let addition = if text.is_empty() { n.to_string() } else { format!(" | {n}") };
+    // Nur noch nicht vorhandene Hinweise (idempotent), Reihenfolge erhalten.
+    let fresh: Vec<&str> = notes
+        .iter()
+        .map(|n| n.trim())
+        .filter(|n| !n.is_empty() && !old.contains(*n))
+        .collect();
+    if fresh.is_empty() {
+        return Ok(0);
+    }
+
+    // Fügt `s` an `text` an, wenn es ins 80-Zeichen-Feld passt; sonst false (unverändert).
+    fn try_push(text: &mut String, s: &str) -> bool {
+        let addition = if text.is_empty() { s.to_string() } else { format!(" | {s}") };
         if text.len() + addition.len() > ANAMNESE_MAX {
-            warn!(%patnr, "Risikoanamnese-Eintrag passt nicht mehr in 80 Zeichen — ausgelassen");
-            break;
+            return false;
         }
         text.push_str(&addition);
-        appended += 1;
+        true
+    }
+
+    // Passen ALLE frischen Hinweise? (Probelauf auf einer Kopie.)
+    let mut probe = old.clone();
+    let all_fit = fresh.iter().copied().all(|n| try_push(&mut probe, n));
+
+    let mut text = old;
+    let mut appended = 0usize;
+    if all_fit {
+        for n in fresh.iter().copied() {
+            if try_push(&mut text, n) {
+                appended += 1;
+            }
+        }
+    } else if let Some(marker) = overflow_marker {
+        // Zu viel für 80 Zeichen → ein Sammelverweis statt abgeschnittener Einzelteile.
+        let m = marker.trim();
+        if !m.is_empty() && !text.contains(m) && try_push(&mut text, m) {
+            appended += 1;
+        } else {
+            warn!(%patnr, "Risikoanamnese: Sammelverweis passt nicht mehr in 80 Zeichen — ausgelassen");
+        }
+    } else {
+        // Ohne Sammelverweis (z. B. c/o): so viele wie möglich, Rest auslassen.
+        for n in fresh.iter().copied() {
+            if !try_push(&mut text, n) {
+                warn!(%patnr, "Risikoanamnese-Eintrag passt nicht mehr in 80 Zeichen — ausgelassen");
+                break;
+            }
+            appended += 1;
+        }
     }
     if appended == 0 {
         return Ok(0);
@@ -561,13 +607,15 @@ async fn run_cycle(
     for wb in &pending {
         // Schon angewandt (Ack war evtl. fehlgeschlagen) → nur Ack nachholen.
         if applied.contains(&wb.id) {
-            let _ = cloud.ack_writeback_applied(&wb.id, wb.patient_id.trim()).await;
+            // Reiner Ack-Nachholer nach Netzabbruch → keinen (leeren) Report senden,
+            // der einen früher gemeldeten überschreiben würde.
+            let _ = cloud.ack_writeback_applied(&wb.id, wb.patient_id.trim(), None).await;
             continue;
         }
         match process_one(&mut conn, cfg, wb).await {
-            Ok(Outcome::Applied(patnr)) => {
+            Ok(Outcome::Applied(patnr, report)) => {
                 applied.insert(wb.id.clone());
-                if let Err(e) = cloud.ack_writeback_applied(&wb.id, &patnr).await {
+                if let Err(e) = cloud.ack_writeback_applied(&wb.id, &patnr, Some(&report)).await {
                     warn!(id=%wb.id, error=%e, "Writeback angewandt, Ack fehlgeschlagen (wird nachgeholt)");
                 }
             }
@@ -594,8 +642,8 @@ async fn run_cycle(
 
 /// Ergebnis der Bündel-Verarbeitung.
 enum Outcome {
-    /// Angewandt (mit getroffener PATNR).
-    Applied(String),
+    /// Angewandt (mit getroffener PATNR + Schreib-Report für den Ack).
+    Applied(String, WritebackReport),
     /// Nicht eindeutig → manuelle Zuordnung nötig (nahe PATNR-Kandidaten).
     Review(Vec<String>),
     /// Patient (noch) nicht in Z1 → zurückstellen, später erneut.
@@ -632,6 +680,6 @@ async fn process_one(
 
     let mut data = PatientWriteback::from(wb);
     data.patient_id = patnr.clone();
-    apply_writeback(conn, cfg, &data).await?;
-    Ok(Outcome::Applied(patnr))
+    let report = apply_writeback(conn, cfg, &data).await?;
+    Ok(Outcome::Applied(patnr, report))
 }

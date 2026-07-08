@@ -8,8 +8,30 @@
 
 use crate::config::ConnectorConfig;
 use crate::error::{ConnectorError, Result};
+use crate::z1db::WritebackReport;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+
+/// Body des `applied`-Acks inkl. optionalem Schreib-Report — die Cloud macht damit
+/// sichtbar, ob z. B. die Risikoanamnese (CAVE) wirklich geschrieben oder
+/// übersprungen wurde. Alle Report-Felder werden weggelassen, wenn kein Report vorliegt.
+#[derive(Debug, Serialize)]
+struct WritebackAppliedBody<'a> {
+    patient_id: &'a str,
+    matched_by: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    contact_updated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    address_updated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cave_appended: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    co_appended: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    anamnese_inserted: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skipped: Vec<String>,
+}
 
 #[derive(Clone)]
 pub struct CloudClient {
@@ -317,12 +339,27 @@ impl CloudClient {
 
     /// Quittiert ein erfolgreich in Z1 zurückgeschriebenes Bündel.
     /// **Backend-Vertrag offen:** `POST /api/v1/connector/z1/writeback/{id}/applied`.
-    pub async fn ack_writeback_applied(&self, id: &str, patient_id: &str) -> Result<()> {
+    pub async fn ack_writeback_applied(
+        &self,
+        id: &str,
+        patient_id: &str,
+        report: Option<&WritebackReport>,
+    ) -> Result<()> {
+        let body = WritebackAppliedBody {
+            patient_id,
+            matched_by: "z1db",
+            contact_updated: report.map(|r| r.contact_updated),
+            address_updated: report.map(|r| r.address_updated),
+            cave_appended: report.map(|r| r.cave_appended),
+            co_appended: report.map(|r| r.co_appended),
+            anamnese_inserted: report.map(|r| r.anamnese_inserted),
+            skipped: report.map(|r| r.skipped.clone()).unwrap_or_default(),
+        };
         self.auth(
             self.http
                 .post(self.url(&format!("z1/writeback/{id}/applied"))),
         )
-        .json(&FiledBody { patient_id, matched_by: "z1db" })
+        .json(&body)
         .send()
         .await
         .map_err(|e| ConnectorError::Http(e.to_string()))?
