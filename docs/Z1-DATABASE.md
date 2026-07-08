@@ -198,8 +198,16 @@ Umgesetzt im Core-Modul **`core/src/z1db/`** (Treiber: `tiberius`):
 
 Config (`core/src/config.rs`, DPAPI-geschützt): `z1_db_server/database/user/password`
 (Read-only) + `z1_db_write_user/password` (schreibfähig) + Toggles
-`writeback_contact / _address / _cave / _anamnese / _new_patient`.
+`writeback_contact / _address / _cave / _anamnese / _new_patient`
++ **`z1_hkp_lookback_months`** (Default 24): abgeschlossene/abgelehnte HKP-Fälle nur
+bis so weit zurück melden (Effizienz); offene/abgelaufene IMMER. `0`=unbegrenzt. Das
+**FE** filtert die Anzeige feiner (Default z. B. 6 Monate, einstellbar).
 Tauri-Commands: `test_z1db_connection`, `bootstrap_z1_readonly`.
+
+**Robustheit:** Verbindungs-Timeout (12 s) + Poll-Zyklus-Timeout (120 s) verhindern,
+dass ein hängender Query den Dienst/Stop blockiert. Change-Detection per Fingerprint,
+StatusStore einmal pro Zyklus persistiert; Writeback idempotent
+(`applied_writebacks.json` + „CAVE bereits vorhanden"-Check).
 
 Cloud-Verdrahtung umgesetzt: `hkp.rs` (HKP-Poller EBZ→Cloud, `report_hkp_status`),
 `writeback.rs::spawn` (Cloud→Z1, mit Idempotenz-Store), `lookup.rs::resolve_patnr`

@@ -6,9 +6,13 @@
 
 use crate::error::{ConnectorError, Result};
 use chrono::Local;
+use std::time::Duration;
 use tiberius::{AuthMethod, Client, Config, SqlBrowser};
 use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
+
+/// Max. Wartezeit für TCP-Verbindung bzw. Login — verhindert hängende Poll-Zyklen.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// Laufende Z1-DB-Verbindung. Dünner Wrapper um den tiberius-Client.
 pub struct Z1Connection {
@@ -46,19 +50,25 @@ pub async fn connect(
     }
 
     // Named Instance → Portauflösung über SQL Browser (connect_named).
-    let tcp = if named.is_some() {
-        TcpStream::connect_named(&config)
-            .await
-            .map_err(z1("Verbindung (SQL Browser)"))?
-    } else {
-        TcpStream::connect(config.get_addr())
-            .await
-            .map_err(z1("Verbindung"))?
+    let connect_fut = async {
+        if named.is_some() {
+            TcpStream::connect_named(&config)
+                .await
+                .map_err(z1("Verbindung (SQL Browser)"))
+        } else {
+            TcpStream::connect(config.get_addr())
+                .await
+                .map_err(z1("Verbindung"))
+        }
     };
+    let tcp = tokio::time::timeout(CONNECT_TIMEOUT, connect_fut)
+        .await
+        .map_err(|_| ConnectorError::Z1Db("Verbindungs-Timeout (TCP)".into()))??;
     tcp.set_nodelay(true).ok();
 
-    let client = Client::connect(config, tcp.compat_write())
+    let client = tokio::time::timeout(CONNECT_TIMEOUT, Client::connect(config, tcp.compat_write()))
         .await
+        .map_err(|_| ConnectorError::Z1Db("Verbindungs-Timeout (Login)".into()))?
         .map_err(z1("Login"))?;
     Ok(Z1Connection { client })
 }

@@ -446,8 +446,11 @@ pub fn spawn(cfg: ConnectorConfig) -> LoopHandle {
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    if let Err(e) = run_cycle(&cfg, &cloud, &mut applied).await {
-                        debug!(error=%e, "Writeback-Zyklus fehlgeschlagen");
+                    // Zeitlimit gegen hängende Queries (blockiert sonst auch Stop).
+                    match tokio::time::timeout(Duration::from_secs(120), run_cycle(&cfg, &cloud, &mut applied)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => debug!(error=%e, "Writeback-Zyklus fehlgeschlagen"),
+                        Err(_) => warn!("Writeback-Zyklus abgebrochen (Timeout)"),
                     }
                 }
                 _ = rx.changed() => {

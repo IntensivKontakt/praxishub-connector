@@ -26,6 +26,9 @@ fn default_doc_poll() -> u64 {
 fn default_z1_database() -> String {
     "Z1".to_string()
 }
+fn default_hkp_lookback() -> u32 {
+    24
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectorConfig {
@@ -87,6 +90,12 @@ pub struct ConnectorConfig {
     /// Selbstsigniertes Serverzertifikat der Z1-Instanz akzeptieren (Standard: ja).
     #[serde(default = "default_true")]
     pub z1_db_trust_cert: bool,
+    /// Effizienz-Grenze fürs HKP-Tracking: **abgeschlossene/abgelehnte** Fälle werden
+    /// nur gemeldet, wenn ihr Abschluss ≤ so viele Monate zurückliegt. **Offene und
+    /// abgelaufene** Fälle werden IMMER gemeldet (Werthebel). `0` = unbegrenzt. Das FE
+    /// filtert die Anzeige feiner (Standard z. B. 6 Monate, einstellbar).
+    #[serde(default = "default_hkp_lookback")]
+    pub z1_hkp_lookback_months: u32,
 
     // ── Rückschreib-Toggles (jede Fähigkeit einzeln aktivierbar) ─────────────
     /// Kontaktdaten (Telefon/E-Mail) in `ADR` zurückschreiben.
@@ -133,6 +142,7 @@ impl Default for ConnectorConfig {
             z1_db_write_user: String::new(),
             z1_db_write_password: String::new(),
             z1_db_trust_cert: true,
+            z1_hkp_lookback_months: default_hkp_lookback(),
             writeback_contact: false,
             writeback_address: false,
             writeback_cave: false,

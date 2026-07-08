@@ -312,6 +312,23 @@ fn variant_of(planart: &str) -> &'static str {
     }
 }
 
+/// Abgeschlossene/terminale Zustände — für diese greift die Zeitfenster-Grenze.
+/// (Offene/abgelaufene Fälle sind der Werthebel und werden IMMER gemeldet.)
+fn is_closed(status: &str) -> bool {
+    matches!(status, "eingegliedert" | "abgerechnet" | "abgelehnt")
+}
+
+/// Abschlussdatum eines terminalen Falls (spätestes relevantes Datum).
+fn closure_date(f: &PlanFacts) -> String {
+    [&f.kzvabr, &f.eingliederung, &f.decision_date]
+        .into_iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .max()
+        .unwrap_or("")
+        .to_string()
+}
+
 /// Ein Poll-Zyklus. Gibt die Anzahl gemeldeter Fall-Statuswechsel zurück.
 async fn poll_once(cfg: &ConnectorConfig, cloud: &CloudClient, store: &mut StatusStore) -> Result<usize> {
     let mut conn = z1db::connect(
@@ -325,11 +342,20 @@ async fn poll_once(cfg: &ConnectorConfig, cloud: &CloudClient, store: &mut Statu
 
     let (plans, facts, subs) = load_all(&mut conn).await?;
 
-    let expiry_cutoff = chrono::Local::now()
-        .date_naive()
+    let today = chrono::Local::now().date_naive();
+    let expiry_cutoff = today
         .checked_sub_months(chrono::Months::new(VALIDITY_MONTHS))
         .map(|d| d.format("%Y%m%d").to_string())
         .unwrap_or_default();
+    // Effizienz/FE-Standard: abgeschlossene Fälle nur bis so weit zurück melden.
+    let lookback_cutoff = if cfg.z1_hkp_lookback_months > 0 {
+        today
+            .checked_sub_months(chrono::Months::new(cfg.z1_hkp_lookback_months))
+            .map(|d| d.format("%Y%m%d").to_string())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
 
     // Pläne zu Fällen (PATNR|LFDBEFUND) gruppieren; nur Fälle mit LFDBEFUND.
     let mut cases: HashMap<String, Vec<PlanKey>> = HashMap::new();
@@ -365,6 +391,14 @@ async fn poll_once(cfg: &ConnectorConfig, cloud: &CloudClient, store: &mut Statu
 
         let pfacts = facts.get(&primary).cloned().unwrap_or_default();
         let status = compute_status(&pfacts, &expiry_cutoff);
+        // Alte, abgeschlossene/abgelehnte Fälle nicht mehr melden (spart Backfill +
+        // XML-Fetch). Offene/abgelaufene Fälle sind der Werthebel → immer melden.
+        if is_closed(status) && !lookback_cutoff.is_empty() {
+            let rel = closure_date(&pfacts);
+            if rel.is_empty() || rel.as_str() < lookback_cutoff.as_str() {
+                continue;
+            }
+        }
         // Fingerprint statt nur Status-Label → erkennt auch neue Rückfragen/
         // Antworten oder zusätzliche Pläne (AAV) im Fall, damit das Drawer im
         // Cloud nicht veraltet, obwohl das Status-Label gleich bleibt.
@@ -461,10 +495,13 @@ pub fn spawn(cfg: ConnectorConfig) -> LoopHandle {
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    match poll_once(&cfg, &cloud, &mut store).await {
-                        Ok(n) if n > 0 => debug!(gemeldet = n, "HKP-Poll-Zyklus"),
-                        Ok(_) => {}
-                        Err(e) => debug!(error=%e, "HKP-Poll-Zyklus fehlgeschlagen"),
+                    // Zeitlimit, damit ein hängender Query weder den Zyklus noch das
+                    // Stoppen des Dienstes blockiert.
+                    match tokio::time::timeout(Duration::from_secs(120), poll_once(&cfg, &cloud, &mut store)).await {
+                        Ok(Ok(n)) if n > 0 => debug!(gemeldet = n, "HKP-Poll-Zyklus"),
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => debug!(error=%e, "HKP-Poll-Zyklus fehlgeschlagen"),
+                        Err(_) => warn!("HKP-Poll-Zyklus abgebrochen (Timeout)"),
                     }
                 }
                 _ = rx.changed() => {
