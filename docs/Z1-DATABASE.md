@@ -205,6 +205,15 @@ Cloud-Verdrahtung umgesetzt: `hkp.rs` (HKP-Poller EBZ→Cloud, `report_hkp_statu
 `writeback.rs::spawn` (Cloud→Z1, mit Idempotenz-Store), `lookup.rs::resolve_patnr`
 (Name+Geb→PATNR). Beide Schleifen im Tauri-Lebenszyklus verdrahtet.
 
+**HKP-Lifecycle (voller Status, nicht nur Entscheidung):** `hkp.rs` leitet je Plan aus
+allen `EBZ`-Zeilen + `ZPLAN`/`ZEHIT` den Status ab und meldet **Statuswechsel**:
+`erstellt` (inkl. signiert) → `versendet` → `rueckfrage` (DOKART=4 der Kasse, Aktion
+nötig) → `genehmigt`/`abgelehnt` (DOKART=3 ZUGESTELLT) → `eingegliedert`
+(ZEHIT.EINGLIEDERUNGSDATUM) → `abgerechnet` (ZPLAN.KZVEINREICH/KZVABRDATUM). Report
+trägt Meilenstein-Daten + **Voll-HKP-EEBZ0-XML** (fürs Detail-Drawer; Rendern per
+KZBV-XSLT = „PDF-Ansicht", ein separates HKP-PDF gibt es in Z1 NICHT). **Terminierungs-
+Status** kommt Praxishub-seitig (Z1-Terminmodul `ETSSTERMIN` hier leer → Doctolib).
+
 **Noch offen:** Backend-Routen unter `/connector/z1/*` (hkp-status, writeback/pending
 + ack); UI der Toggles; Neupatient-Anlage (NUMBERPOOL + Karten-Match-Test); Build/Test
 auf der Dev-Maschine (kein `cargo` am PVS — ein paar `tiberius`-API-Details verifizieren).

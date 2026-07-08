@@ -105,24 +105,44 @@ pub struct PendingWriteback {
     pub anamnese: Vec<String>,
 }
 
-/// Eine aus der Z1-DB gelesene HKP-/EBZ-Entscheidung (genehmigt/abgelehnt) samt
-/// vollständigem HKP-XML. Ersetzt den KIM-Weg ([`HkpReport`]) durch den DB-Weg.
+/// Der aktuelle Lifecycle-Status eines HKP-/EBZ-Plans samt Detaildaten fürs
+/// Praxishub-Tracking-Modul (Detail-Drawer) und dem Voll-HKP-XML zum Rendern.
+/// Ersetzt den KIM-Weg ([`HkpReport`]) durch den DB-Weg.
+///
+/// Wird gemeldet, sobald sich der `status` eines Plans ändert (Transition).
+/// Die Cloud upsertet je `plan_key` (letzter Status gewinnt).
+///
+/// `status` ∈ { `erstellt`, `versendet`, `rueckfrage`, `genehmigt`, `abgelehnt`,
+/// `eingegliedert`, `abgerechnet` }. (`signiert` wird in `erstellt` zusammengefasst;
+/// der Terminierungs-Status kommt Praxishub-seitig, nicht aus Z1.)
 ///
 /// **Backend-Vertrag offen:** `POST /api/v1/connector/z1/hkp-status`.
 #[derive(Debug, Serialize)]
 pub struct HkpStatusReport {
-    /// Stabiler Dedup-Schlüssel (`PATNR|LFDPLAN|LFDNR|ERHALTDATUM`).
-    pub source_key: String,
+    /// Stabiler Plan-Schlüssel (`PATNR|LFDPLAN`).
+    pub plan_key: String,
     pub patient_id: String,
     pub plan_no: String,
     pub antragsnummer: String,
     /// Dekodierte Planart, z. B. `eHKP`, `ePAR`, `eKBR/KGL`.
     pub planart: String,
-    /// `"genehmigt"` | `"abgelehnt"`.
+    /// Aktueller Lifecycle-Status (s. o.).
     pub status: String,
-    /// Entscheidungsdatum (`JJJJMMTT`).
-    pub decided_on: String,
-    /// Vollständiges GKV-EEBZ0-XML (Base64), aus `FILEPOOL` — sofern vorhanden.
+    // Meilenstein-Daten (`JJJJMMTT`), soweit erreicht — für die Timeline im Drawer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_on: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sent_on: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_on: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decided_on: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inserted_on: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub billed_on: Option<String>,
+    /// Vollständiges GKV-EEBZ0-XML (Base64) aus `FILEPOOL` — Praxishub rendert es
+    /// per KZBV-XSLT als HKP-Ansicht („PDF"). `None`, wenn (noch) nicht vorhanden.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ehkp_xml_b64: Option<String>,
 }
