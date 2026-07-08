@@ -20,4 +20,6 @@ pub struct AppState {
     pub heartbeat_loop: Mutex<Option<LoopHandle>>,
     /// Z1-PATID-Nachmatch-Schleife. None = gestoppt.
     pub patient_match_loop: Mutex<Option<LoopHandle>>,
+    /// Praxis-Steuerungs-Sync (nächtliche Z1-Aggregate → Cloud). None = gestoppt.
+    pub control_loop: Mutex<Option<LoopHandle>>,
 }

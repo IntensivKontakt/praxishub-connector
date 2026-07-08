@@ -29,6 +29,12 @@ fn default_z1_database() -> String {
 fn default_hkp_lookback() -> u32 {
     24
 }
+fn default_control_hour() -> u8 {
+    3
+}
+fn default_control_months() -> u32 {
+    36
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectorConfig {
@@ -97,6 +103,23 @@ pub struct ConnectorConfig {
     #[serde(default = "default_hkp_lookback")]
     pub z1_hkp_lookback_months: u32,
 
+    // ── Praxis-Steuerung (nächtlicher Aggregat-Sync, docs: z1db/control.rs) ──
+    /// Täglichen Controlling-Sync (BEH/KONTO/CASH/FAKT/BILL-Aggregate → Cloud)
+    /// aktivieren. Opt-in, Default aus.
+    #[serde(default)]
+    pub z1_control_enabled: bool,
+    /// Lokale Stunde des täglichen Laufs (Fenster ± 1 h). Default 3 = 03:00.
+    #[serde(default = "default_control_hour")]
+    pub z1_control_hour: u8,
+    /// Zeitfenster der Monats-Aggregate (revenue/payments/open_services).
+    #[serde(default = "default_control_months")]
+    pub z1_control_months: u32,
+    /// Spaltennamen-Overrides für die Controlling-Aggregate (JSON-Objekt,
+    /// Feldname → Z1-Spaltenname) — finalisiert die Zuordnung am Piloten ohne
+    /// Neubau. `None` = Default-Vermutungen (siehe `z1db::control::ColumnMap`).
+    #[serde(default)]
+    pub z1_control_column_map: Option<serde_json::Value>,
+
     // ── Rückschreib-Toggles (jede Fähigkeit einzeln aktivierbar) ─────────────
     /// Kontaktdaten (Telefon/E-Mail) in `ADR` zurückschreiben.
     #[serde(default)]
@@ -147,6 +170,10 @@ impl Default for ConnectorConfig {
             z1_db_write_password: String::new(),
             z1_db_trust_cert: true,
             z1_hkp_lookback_months: default_hkp_lookback(),
+            z1_control_enabled: false,
+            z1_control_hour: default_control_hour(),
+            z1_control_months: default_control_months(),
+            z1_control_column_map: None,
             writeback_contact: false,
             writeback_address: false,
             writeback_cave: false,

@@ -7,11 +7,13 @@
 //!   * CAVE/Allergien  → additiv an `PAT.ANAMNESE` (Risikoanamnese, `varchar(80)`)
 //!   * Krankenanamnese → `INSERT INTO PATINFO` (ART=1) — exakt wie Nelly
 //!
-//! Zwei eigenständige Hintergrund-Schleifen (analog `documents::spawn`):
+//! Eigenständige Hintergrund-Schleifen (analog `documents::spawn`):
 //!   * [`hkp::spawn`]       — liest neue HKP-Entscheidungen aus `EBZ` + Voll-HKP aus
 //!                            `FILEPOOL` und meldet sie der Cloud (ersetzt KIM).
 //!   * [`writeback::spawn`] — holt Aufnahme-Bündel aus der Cloud und schreibt sie
 //!                            (je nach Toggle) strukturiert in Z1 zurück.
+//!   * [`control::spawn`]   — nächtlicher Aggregat-Sync (Praxis-Steuerung):
+//!                            Honorar/Zahlungen/Forderungen/offene Leistungen.
 //!
 //! **Goldene Regel (analog KIM-Watcher):** den PVS-Betrieb nie stören — nur
 //! additiv/gezielt schreiben, Datensatz vorher prüfen, Transaktion +
@@ -20,6 +22,7 @@
 
 pub mod bootstrap;
 pub mod client;
+pub mod control;
 pub mod hkp;
 pub mod lookup;
 pub mod patient_match;
@@ -27,6 +30,7 @@ pub mod writeback;
 
 pub use bootstrap::create_readonly_login;
 pub use client::{connect, Z1Connection};
+pub use control::spawn as spawn_control_sync;
 pub use hkp::spawn as spawn_hkp_poller;
 pub use lookup::resolve_patient;
 pub use patient_match::spawn as spawn_patient_match;

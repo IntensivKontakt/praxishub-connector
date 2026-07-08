@@ -546,6 +546,9 @@ mod tests {
     #[test]
     fn fuzzy_leere_kandidaten_ist_notfound() {
         let w = PatientKey::new("Groth", "Nikolas", "23.02.2001");
-        assert_eq!(resolve_fuzzy(&w, None, &[]), Resolution::NotFound);
+        assert_eq!(
+            resolve_fuzzy::<String>(&w, None, &[]),
+            Resolution::NotFound
+        );
     }
 }

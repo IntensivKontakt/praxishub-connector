@@ -37,6 +37,12 @@ pub fn writeback_seen_store_file() -> Result<PathBuf> {
     Ok(config_dir()?.join("applied_writebacks.json"))
 }
 
+/// Tages-Marker des Praxis-Steuerungs-Syncs (`control_last_run.txt`) — hält das
+/// ISO-Datum des letzten erfolgreichen Laufs (max. ein Sync pro Tag).
+pub fn control_last_run_file() -> Result<PathBuf> {
+    Ok(config_dir()?.join("control_last_run.txt"))
+}
+
 /// Log-Verzeichnis.
 pub fn log_dir() -> Result<PathBuf> {
     let dir = project_dirs()?.data_dir().join("logs");

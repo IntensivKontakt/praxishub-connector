@@ -209,6 +209,86 @@ pub struct HkpSubmission {
     pub result: Option<String>,
 }
 
+/// Nächtlicher Aggregat-Report fürs Modul „Praxis-Steuerung" (Controlling aus
+/// der Z1-DB). Erstellt in [`crate::z1db::control`]; die Cloud upsertet die
+/// Aggregate und speichert `sync.schema` + `sync.pending_mappings` (Grundlage
+/// für die Spalten-Zuordnung am Piloten).
+///
+/// **Backend-Vertrag:** `POST /api/v1/connector/z1/control-report`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ControlReport {
+    pub sync: ControlSync,
+    pub revenue: Vec<RevenueRow>,
+    pub payments: Vec<PaymentRow>,
+    pub ar_aging: Vec<ArAgingRow>,
+    pub open_services: Vec<OpenServicesRow>,
+}
+
+/// Sync-Metadaten des Control-Reports.
+#[derive(Debug, Clone, Serialize)]
+pub struct ControlSync {
+    /// Datenstand (ISO-Datum des Laufs).
+    pub watermark: String,
+    /// `ok` | `partial` (einzelne Teile ausgelassen) | `pending_mapping` (alle).
+    pub status: String,
+    /// Gescannte BEH-Quellzeilen im Zeitfenster (0, solange Mapping fehlt).
+    pub rows_scanned: i64,
+    /// Schema-Discovery `{tabelle: [spalten…]}` (INFORMATION_SCHEMA).
+    pub schema: serde_json::Value,
+    /// Ausgelassene Report-Teile: `{teil: {missing: [...], available: [...]}}`.
+    pub pending_mappings: serde_json::Value,
+}
+
+/// Honorar je Monat × Art × Behandler (aus `BEH ⋈ LBLOCKENTRY`).
+/// `gruppe`/`standort`/`eigenlabor`/`fremdlabor` sind `null`, bis die
+/// entsprechenden Z1-Spalten am Piloten gemappt sind (nie erfinden).
+#[derive(Debug, Clone, Serialize)]
+pub struct RevenueRow {
+    /// Monatserster als ISO-Datum, z. B. `"2026-07-01"`.
+    pub period: String,
+    /// `bema` | `goz` | `privat` (unbekannte Z1-Rohwerte kleingeschrieben durchgereicht).
+    pub art: String,
+    pub gruppe: Option<String>,
+    pub behandler: String,
+    pub standort: Option<String>,
+    pub honorar: f64,
+    pub eigenlabor: Option<f64>,
+    pub fremdlabor: Option<f64>,
+    pub n_leistungen: i64,
+    pub n_faelle: i64,
+}
+
+/// Zahlungseingänge je Monat × Zahlart (aus `KONTO`/`CASH`).
+#[derive(Debug, Clone, Serialize)]
+pub struct PaymentRow {
+    pub period: String,
+    pub art: String,
+    pub eingang: f64,
+    pub n: i64,
+}
+
+/// Offene Forderungen je Alters-Bucket (`FAKT` − `KONTO`), Stichtags-Snapshot.
+#[derive(Debug, Clone, Serialize)]
+pub struct ArAgingRow {
+    /// ISO-Datum des Snapshots, z. B. `"2026-07-08"`.
+    pub snapshot_date: String,
+    /// `0-30` | `31-60` | `61-90` | `90+` (| `unbekannt` bei unlesbarem Datum).
+    pub bucket: String,
+    pub offen: f64,
+    pub n: i64,
+}
+
+/// Erbrachte, nicht abgerechnete Leistungen je Behandler (`BEH` ohne `BILL`).
+#[derive(Debug, Clone, Serialize)]
+pub struct OpenServicesRow {
+    pub snapshot_date: String,
+    pub behandler: String,
+    pub offen_betrag: f64,
+    pub n: i64,
+    /// Ältestes Leistungsdatum (ISO), sofern lesbar.
+    pub oldest: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct FiledBody<'a> {
     patient_id: &'a str,
@@ -344,6 +424,19 @@ impl CloudClient {
     /// **Backend-Vertrag offen:** `POST /api/v1/connector/z1/hkp-status`.
     pub async fn report_hkp_case(&self, report: &HkpCaseReport) -> Result<()> {
         self.auth(self.http.post(self.url("z1/hkp-status")))
+            .json(report)
+            .send()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| ConnectorError::Http(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Meldet den nächtlichen Aggregat-Report der Praxis-Steuerung.
+    /// **Backend-Vertrag:** `POST /api/v1/connector/z1/control-report`.
+    pub async fn report_control(&self, report: &ControlReport) -> Result<()> {
+        self.auth(self.http.post(self.url("z1/control-report")))
             .json(report)
             .send()
             .await

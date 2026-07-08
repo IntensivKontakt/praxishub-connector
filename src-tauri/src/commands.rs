@@ -196,6 +196,12 @@ pub(crate) async fn start_watcher(app: &AppHandle) {
         *state.patient_match_loop.lock().await = Some(handle);
     }
 
+    // Praxis-Steuerung: nächtlicher Aggregat-Sync (opt-in per z1_control_enabled).
+    if cfg.z1_control_enabled && cfg.z1db_read_ready() && cfg.cloud_ready() {
+        let handle = connector_core::z1db::spawn_control_sync(cfg.clone());
+        *state.control_loop.lock().await = Some(handle);
+    }
+
     // KIM/EBZ-Weg ist abgelöst (HKP-Fälle kommen jetzt direkt aus der Z1-DB) – kein KIM-Watcher mehr.
     state
         .status
@@ -213,6 +219,7 @@ pub(crate) async fn stop_watcher(app: &AppHandle) {
     let writeback_loop = state.writeback_loop.lock().await.take();
     let heartbeat_loop = state.heartbeat_loop.lock().await.take();
     let patient_match_loop = state.patient_match_loop.lock().await.take();
+    let control_loop = state.control_loop.lock().await.take();
     if let Some(handle) = watcher {
         handle.stop().await;
     }
@@ -229,6 +236,9 @@ pub(crate) async fn stop_watcher(app: &AppHandle) {
         handle.stop().await;
     }
     if let Some(handle) = patient_match_loop {
+        handle.stop().await;
+    }
+    if let Some(handle) = control_loop {
         handle.stop().await;
     }
 }
