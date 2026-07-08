@@ -82,6 +82,8 @@ pub fn run() {
             commands::get_status,
             commands::test_cloud_connection,
             commands::test_kim_connection,
+            commands::test_z1db_connection,
+            commands::bootstrap_z1_readonly,
             commands::register_with_pvs,
             commands::unregister_from_pvs,
         ])

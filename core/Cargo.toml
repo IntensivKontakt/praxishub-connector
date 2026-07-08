@@ -22,6 +22,11 @@ thiserror = "1"
 anyhow = "1"
 directories = "5"
 base64 = "0.22"
+# Z1-SQL-Server (MSSQL) — Read-only-Lesen + strukturiertes Rückschreiben.
+# Named-Instance-Auflösung (srv-fs\z1) über SQL Browser → Feature sql-browser-tokio.
+# TLS über native-tls (bereits vorhandene Abhängigkeit); Datums-/Zeitwerte via chrono.
+tiberius = { version = "0.12", default-features = false, features = ["tds73", "native-tls", "chrono", "sql-browser-tokio"] }
+tokio-util = { version = "0.7", features = ["compat"] }
 
 [target.'cfg(windows)'.dependencies]
 # DPAPI für Secret-Schutz at-rest (core/src/crypto.rs)

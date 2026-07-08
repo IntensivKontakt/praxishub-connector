@@ -62,6 +62,66 @@ pub async fn test_kim_connection() -> Result<String, String> {
     Ok(format!("OK · {n} Nachricht(en) im Postfach"))
 }
 
+/// Verbindungstest gegen die Z1-DB mit dem gespeicherten Read-only-Login.
+#[tauri::command]
+pub async fn test_z1db_connection() -> Result<String, String> {
+    let cfg = ConnectorConfig::load().map_err(err)?;
+    if !cfg.z1db_read_ready() {
+        return Err("Z1-DB-Zugang unvollständig (Server/DB/Benutzer/Passwort)".into());
+    }
+    let mut conn = connector_core::z1db::connect(
+        &cfg.z1_db_server,
+        &cfg.z1_db_database,
+        &cfg.z1_db_user,
+        &cfg.z1_db_password,
+        cfg.z1_db_trust_cert,
+    )
+    .await
+    .map_err(err)?;
+    let version = conn.ping().await.map_err(err)?;
+    let first = version.lines().next().unwrap_or("").trim();
+    Ok(format!("verbunden · {first}"))
+}
+
+/// Legt aus **temporär** eingegebenen Admin-Zugangsdaten den dedizierten
+/// Read-only-Login `praxishub_ro` an und speichert NUR diesen (DPAPI) in der
+/// Config. Die Admin-Zugangsdaten werden nicht persistiert — die UI weist den
+/// Nutzer an, sie danach zu verwerfen.
+#[tauri::command]
+pub async fn bootstrap_z1_readonly(
+    server: String,
+    admin_user: String,
+    admin_password: String,
+    ro_password: String,
+    trust_cert: bool,
+) -> Result<String, String> {
+    let database = "Z1";
+    let ro_user = "praxishub_ro";
+    connector_core::z1db::create_readonly_login(
+        &server,
+        database,
+        &admin_user,
+        &admin_password,
+        ro_user,
+        &ro_password,
+        trust_cert,
+    )
+    .await
+    .map_err(err)?;
+
+    let mut cfg = ConnectorConfig::load().map_err(err)?;
+    cfg.z1_db_server = server;
+    cfg.z1_db_database = database.to_string();
+    cfg.z1_db_user = ro_user.to_string();
+    cfg.z1_db_password = ro_password;
+    cfg.z1_db_trust_cert = trust_cert;
+    cfg.save().map_err(err)?;
+
+    Ok("Read-only-Login angelegt und gespeichert. Die Admin-Zugangsdaten wurden \
+        NICHT gespeichert — du kannst sie jetzt wieder löschen."
+        .to_string())
+}
+
 #[tauri::command]
 pub fn register_with_pvs() -> Result<String, String> {
     spawn_elevated("--register-vdds")

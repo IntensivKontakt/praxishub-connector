@@ -23,6 +23,9 @@ fn default_poll() -> u64 {
 fn default_doc_poll() -> u64 {
     60
 }
+fn default_z1_database() -> String {
+    "Z1".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectorConfig {
@@ -60,6 +63,49 @@ pub struct ConnectorConfig {
     /// Abholverzeichnis eintragen. Siehe docs/OPERATIONS.md.
     #[serde(default)]
     pub exchange_dir: String,
+
+    // ── Z1-SQL-Datenbank (Lesen + strukturiertes Rückschreiben) ──────────────
+    // Voller Kontext: docs/Z1-DATABASE.md. Der Connector nutzt einen dedizierten
+    // Read-only-Login (`praxishub_ro`); die Rückschreib-Funktionen brauchen einen
+    // schreibfähigen Login (z. B. den Z1-App-Login) — siehe `z1_db_write_user`.
+    /// SQL-Server-Instanz, z. B. `srv-fs\z1` (Host `\` Named Instance).
+    #[serde(default)]
+    pub z1_db_server: String,
+    #[serde(default = "default_z1_database")]
+    pub z1_db_database: String,
+    /// Read-only-Login (`db_datareader`) — Status-/HKP-/Stammdaten-Lesen.
+    #[serde(default)]
+    pub z1_db_user: String,
+    #[serde(default)]
+    pub z1_db_password: String,
+    /// Schreibfähiger Login für das Rückschreiben (Kontakt/CAVE/Anamnese).
+    /// Leer ⇒ Rückschreiben deaktiviert. DPAPI-geschützt wie die übrigen Secrets.
+    #[serde(default)]
+    pub z1_db_write_user: String,
+    #[serde(default)]
+    pub z1_db_write_password: String,
+    /// Selbstsigniertes Serverzertifikat der Z1-Instanz akzeptieren (Standard: ja).
+    #[serde(default = "default_true")]
+    pub z1_db_trust_cert: bool,
+
+    // ── Rückschreib-Toggles (jede Fähigkeit einzeln aktivierbar) ─────────────
+    /// Kontaktdaten (Telefon/E-Mail) in `ADR` zurückschreiben.
+    #[serde(default)]
+    pub writeback_contact: bool,
+    /// Adresse (Straße/Hausnr./PLZ/Ort) in `ADR` **überschreiben**, wenn der
+    /// Patient abweichende Angaben macht.
+    #[serde(default)]
+    pub writeback_address: bool,
+    /// CAVE/Allergien additiv an die Risikoanamnese (`PAT.ANAMNESE`) anhängen.
+    #[serde(default)]
+    pub writeback_cave: bool,
+    /// Krankenanamnese als Zeilen in `PATINFO` (ART=1) schreiben — wie Nelly.
+    #[serde(default)]
+    pub writeback_anamnese: bool,
+    /// Neupatienten anlegen (Vorab-Aufnahme). **Vorsicht:** Dubletten-Risiko beim
+    /// Kartenstecken — nur nach empirischem Karten-Match-Test aktivieren.
+    #[serde(default)]
+    pub writeback_new_patient: bool,
 }
 
 fn default_true() -> bool {
@@ -80,6 +126,18 @@ impl Default for ConnectorConfig {
             doc_poll_seconds: default_doc_poll(),
             kim_allow_invalid_cert: true,
             exchange_dir: String::new(),
+            z1_db_server: String::new(),
+            z1_db_database: default_z1_database(),
+            z1_db_user: String::new(),
+            z1_db_password: String::new(),
+            z1_db_write_user: String::new(),
+            z1_db_write_password: String::new(),
+            z1_db_trust_cert: true,
+            writeback_contact: false,
+            writeback_address: false,
+            writeback_cave: false,
+            writeback_anamnese: false,
+            writeback_new_patient: false,
         }
     }
 }
@@ -105,6 +163,8 @@ impl ConnectorConfig {
                 let mut cfg: Self = serde_json::from_slice(&bytes)?;
                 cfg.api_key = crate::crypto::unprotect(&cfg.api_key);
                 cfg.kim_password = crate::crypto::unprotect(&cfg.kim_password);
+                cfg.z1_db_password = crate::crypto::unprotect(&cfg.z1_db_password);
+                cfg.z1_db_write_password = crate::crypto::unprotect(&cfg.z1_db_write_password);
                 Ok(cfg)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -119,6 +179,8 @@ impl ConnectorConfig {
         let mut on_disk = self.clone();
         on_disk.api_key = crate::crypto::protect(&self.api_key);
         on_disk.kim_password = crate::crypto::protect(&self.kim_password);
+        on_disk.z1_db_password = crate::crypto::protect(&self.z1_db_password);
+        on_disk.z1_db_write_password = crate::crypto::protect(&self.z1_db_write_password);
         let json = serde_json::to_vec_pretty(&on_disk)?;
         std::fs::write(path, json)?;
         Ok(())
@@ -135,5 +197,32 @@ impl ConnectorConfig {
     /// Hinreichend konfiguriert, um mit der Cloud zu sprechen?
     pub fn cloud_ready(&self) -> bool {
         !self.praxishub_base_url.is_empty() && !self.tenant_id.is_empty() && !self.api_key.is_empty()
+    }
+
+    /// Genug für read-only-Zugriff auf die Z1-DB (Status/HKP/Stammdaten lesen)?
+    pub fn z1db_read_ready(&self) -> bool {
+        !self.z1_db_server.is_empty()
+            && !self.z1_db_database.is_empty()
+            && !self.z1_db_user.is_empty()
+            && !self.z1_db_password.is_empty()
+    }
+
+    /// Genug, um strukturiert zurückzuschreiben? Braucht einen schreibfähigen Login
+    /// **und** mindestens einen aktiven Rückschreib-Toggle.
+    pub fn z1db_write_ready(&self) -> bool {
+        !self.z1_db_server.is_empty()
+            && !self.z1_db_database.is_empty()
+            && !self.z1_db_write_user.is_empty()
+            && !self.z1_db_write_password.is_empty()
+            && self.any_writeback_enabled()
+    }
+
+    /// Ist mindestens ein Rückschreib-Toggle aktiv?
+    pub fn any_writeback_enabled(&self) -> bool {
+        self.writeback_contact
+            || self.writeback_address
+            || self.writeback_cave
+            || self.writeback_anamnese
+            || self.writeback_new_patient
     }
 }

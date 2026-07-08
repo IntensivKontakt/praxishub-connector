@@ -23,6 +23,9 @@ pub enum ConnectorError {
     #[error("EBZ: {0}")]
     Ebz(String),
 
+    #[error("Z1-DB: {0}")]
+    Z1Db(String),
+
     #[error(transparent)]
     Json(#[from] serde_json::Error),
 
