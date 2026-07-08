@@ -22,6 +22,21 @@ interface ConnectorConfig {
   kim_password: string;
   kim_poll_seconds: number;
   exchange_dir: string;
+  // Z1-Datenbank (Lesen + strukturiertes Rückschreiben)
+  z1_db_server: string;
+  z1_db_database: string;
+  z1_db_user: string;
+  z1_db_password: string;
+  z1_db_write_user: string;
+  z1_db_write_password: string;
+  z1_db_trust_cert: boolean;
+  z1_hkp_lookback_months: number;
+  // Rückschreib-Toggles
+  writeback_contact: boolean;
+  writeback_address: boolean;
+  writeback_cave: boolean;
+  writeback_anamnese: boolean;
+  writeback_new_patient: boolean;
 }
 
 let cfg: ConnectorConfig = blankConfig();
@@ -37,12 +52,31 @@ function blankConfig(): ConnectorConfig {
     kim_password: "",
     kim_poll_seconds: 60,
     exchange_dir: "",
+    z1_db_server: "",
+    z1_db_database: "Z1",
+    z1_db_user: "",
+    z1_db_password: "",
+    z1_db_write_user: "",
+    z1_db_write_password: "",
+    z1_db_trust_cert: true,
+    z1_hkp_lookback_months: 24,
+    writeback_contact: false,
+    writeback_address: false,
+    writeback_cave: false,
+    writeback_anamnese: false,
+    writeback_new_patient: false,
   };
 }
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) =>
   document.querySelector(sel) as T;
 const val = (id: string) => ($(`#${id}`) as HTMLInputElement)?.value.trim() ?? "";
+const checked = (id: string) => ($(`#${id}`) as HTMLInputElement | null)?.checked ?? false;
+const hasEl = (id: string) => !!($(`#${id}`) as HTMLElement | null);
+function setChecked(id: string, v: boolean) {
+  const el = $(`#${id}`) as HTMLInputElement | null;
+  if (el) el.checked = v;
+}
 
 function toast(msg: string) {
   const t = $("#toast");
@@ -167,7 +201,23 @@ function collectFromWizard(): ConnectorConfig {
     kim_password: val("kim_password"),
     kim_poll_seconds: 60,
     // Feld nur im Dashboard vorhanden → im Wizard bestehenden Wert bewahren.
-    exchange_dir: ($("#exchange_dir") as HTMLInputElement | null) ? val("exchange_dir") : cfg.exchange_dir,
+    exchange_dir: hasEl("exchange_dir") ? val("exchange_dir") : cfg.exchange_dir,
+    // Z1-DB-Felder gibt es nur im Dashboard → sonst bestehende Werte bewahren.
+    z1_db_server: hasEl("z1_db_server") ? val("z1_db_server") : cfg.z1_db_server,
+    z1_db_database: hasEl("z1_db_database") ? val("z1_db_database") || "Z1" : cfg.z1_db_database,
+    z1_db_user: hasEl("z1_db_user") ? val("z1_db_user") : cfg.z1_db_user,
+    z1_db_password: hasEl("z1_db_password") ? val("z1_db_password") : cfg.z1_db_password,
+    z1_db_write_user: hasEl("z1_db_write_user") ? val("z1_db_write_user") : cfg.z1_db_write_user,
+    z1_db_write_password: hasEl("z1_db_write_password") ? val("z1_db_write_password") : cfg.z1_db_write_password,
+    z1_db_trust_cert: hasEl("z1_db_trust_cert") ? checked("z1_db_trust_cert") : cfg.z1_db_trust_cert,
+    z1_hkp_lookback_months: hasEl("z1_hkp_lookback_months")
+      ? parseInt(val("z1_hkp_lookback_months") || "24", 10)
+      : cfg.z1_hkp_lookback_months,
+    writeback_contact: hasEl("writeback_contact") ? checked("writeback_contact") : cfg.writeback_contact,
+    writeback_address: hasEl("writeback_address") ? checked("writeback_address") : cfg.writeback_address,
+    writeback_cave: hasEl("writeback_cave") ? checked("writeback_cave") : cfg.writeback_cave,
+    writeback_anamnese: hasEl("writeback_anamnese") ? checked("writeback_anamnese") : cfg.writeback_anamnese,
+    writeback_new_patient: hasEl("writeback_new_patient") ? checked("writeback_new_patient") : cfg.writeback_new_patient,
   };
 }
 
@@ -277,6 +327,48 @@ function renderDashboard() {
       </div>
     </section>
 
+    <section>
+      <h2>Z1-Datenbank &amp; HKP-Tracking</h2>
+      <p class="sub" style="margin-bottom:12px">Read-only-Zugriff auf die Z1-SQL-DB für HKP-Status und Stammdaten.</p>
+      <div class="row">
+        <div class="field"><label>SQL-Server / Instanz</label><input id="z1_db_server" placeholder="srv-fs\\z1" /></div>
+        <div class="field"><label>Datenbank</label><input id="z1_db_database" placeholder="Z1" /></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Read-only-Benutzer</label><input id="z1_db_user" placeholder="praxishub_ro" /></div>
+        <div class="field"><label>Read-only-Passwort</label><input id="z1_db_password" type="password" /></div>
+      </div>
+      <label class="check" style="display:flex;align-items:center;gap:8px;margin:8px 0"><input type="checkbox" id="z1_db_trust_cert" /> Selbstsigniertes Serverzertifikat akzeptieren</label>
+      <div class="field"><label>HKP-Verlauf: abgeschlossene Fälle bis (Monate zurück, 0 = unbegrenzt)</label><input id="z1_hkp_lookback_months" placeholder="24" /></div>
+      <div class="actions"><button id="test_z1db">Z1-DB testen</button></div>
+      <div class="result" id="z1_result"></div>
+
+      <details class="collapsible" style="margin-top:14px">
+        <summary>Read-only-Login anlegen (einmalig, mit Admin-Zugang)</summary>
+        <p class="hint" style="margin-top:10px">Die Admin-Zugangsdaten werden <b>nicht gespeichert</b> — nur der erzeugte Read-only-Login (<code>praxishub_ro</code>) landet in der Konfiguration. Danach kannst du die Admin-Daten wieder verwerfen.</p>
+        <div class="row">
+          <div class="field"><label>Admin-Benutzer (z. B. sa)</label><input id="z1_admin_user" placeholder="sa" /></div>
+          <div class="field"><label>Admin-Passwort</label><input id="z1_admin_password" type="password" /></div>
+        </div>
+        <div class="field"><label>Neues Read-only-Passwort</label><input id="z1_ro_password" type="password" /></div>
+        <div class="actions"><button id="bootstrap_ro">Read-only-Login anlegen</button></div>
+        <div class="result" id="z1_bootstrap_result"></div>
+      </details>
+
+      <h3 style="margin-top:20px">Rückschreiben nach Z1 (digitale Aufnahme)</h3>
+      <p class="sub" style="margin-bottom:10px">Braucht einen schreibfähigen Login. Jede Funktion einzeln aktivierbar.</p>
+      <div class="row">
+        <div class="field"><label>Schreib-Benutzer</label><input id="z1_db_write_user" placeholder="z1" /></div>
+        <div class="field"><label>Schreib-Passwort</label><input id="z1_db_write_password" type="password" /></div>
+      </div>
+      <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_contact" /> Kontaktdaten (Telefon/E-Mail) zurückschreiben</label>
+      <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_address" /> Adresse überschreiben (Straße/PLZ/Ort)</label>
+      <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_cave" /> CAVE/Allergien in Risikoanamnese</label>
+      <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_anamnese" /> Krankenanamnese (PATINFO)</label>
+      <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_new_patient" /> Neupatient anlegen <span class="hint">(Vorsicht: Dubletten-Risiko beim Kartenstecken)</span></label>
+      <div class="actions"><button class="primary" id="save2">Speichern</button></div>
+    </section>
+
     <section><h2>Verlauf</h2><div class="log" id="log">—</div></section>
     <div class="toast" id="toast"></div>
   `;
@@ -287,6 +379,9 @@ function renderDashboard() {
   $("#test_kim").addEventListener("click", () => testConn("test_kim_connection", "KIM"));
   $("#register").addEventListener("click", () => action("register_with_pvs", "Registrierung gestartet …"));
   $("#unregister").addEventListener("click", () => action("unregister_from_pvs", "Registrierung entfernt."));
+  $("#test_z1db").addEventListener("click", onTestZ1);
+  $("#bootstrap_ro").addEventListener("click", onBootstrapRo);
+  $("#save2").addEventListener("click", saveFromDashboard);
 }
 
 function statusCard(id: string, title: string, desc: string) {
@@ -322,6 +417,54 @@ function applyConfig(c: ConnectorConfig) {
   setIf("kim_user", c.kim_user);
   setIf("kim_password", c.kim_password);
   setIf("exchange_dir", c.exchange_dir);
+  setIf("z1_db_server", c.z1_db_server);
+  setIf("z1_db_database", c.z1_db_database || "Z1");
+  setIf("z1_db_user", c.z1_db_user);
+  setIf("z1_db_password", c.z1_db_password);
+  setIf("z1_db_write_user", c.z1_db_write_user);
+  setIf("z1_db_write_password", c.z1_db_write_password);
+  setIf("z1_hkp_lookback_months", String(c.z1_hkp_lookback_months ?? 24));
+  setChecked("z1_db_trust_cert", c.z1_db_trust_cert ?? true);
+  setChecked("writeback_contact", c.writeback_contact);
+  setChecked("writeback_address", c.writeback_address);
+  setChecked("writeback_cave", c.writeback_cave);
+  setChecked("writeback_anamnese", c.writeback_anamnese);
+  setChecked("writeback_new_patient", c.writeback_new_patient);
+}
+
+async function onTestZ1() {
+  cfg = collectFromWizard();
+  await call("save_config", { config: cfg });
+  const res = await call<string>("test_z1db_connection");
+  setResult("z1_result", res ? "ok" : "err", res ? res : "Keine Verbindung – Server/Login prüfen.");
+}
+
+async function onBootstrapRo() {
+  const server = val("z1_db_server");
+  const adminUser = val("z1_admin_user");
+  const adminPassword = val("z1_admin_password");
+  const roPassword = val("z1_ro_password");
+  if (!server || !adminUser || !adminPassword || !roPassword) {
+    setResult("z1_bootstrap_result", "err", "Server, Admin-Zugang und neues Read-only-Passwort ausfüllen.");
+    return;
+  }
+  const res = await call<string>("bootstrap_z1_readonly", {
+    server,
+    adminUser,
+    adminPassword,
+    roPassword,
+    trustCert: checked("z1_db_trust_cert"),
+  });
+  if (res) {
+    setResult("z1_bootstrap_result", "ok", res);
+    const loaded = await call<ConnectorConfig>("get_config"); // RO-Login wurde serverseitig gespeichert
+    if (loaded) {
+      cfg = loaded;
+      applyConfig(cfg);
+    }
+  } else {
+    setResult("z1_bootstrap_result", "err", "Anlegen fehlgeschlagen – Admin-Zugang prüfen.");
+  }
 }
 
 async function saveFromDashboard() {

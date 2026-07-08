@@ -319,7 +319,7 @@ async fn write_anamnese(conn: &mut Z1Connection, patnr: &str, lines: &[String]) 
     let patnr10 = pad_left(patnr, 10);
 
     // Nächste freie Zeilennummer für (PATNR, heute, ART=1).
-    let mut next = conn
+    let next = conn
         .scalar_i32(
             "SELECT ISNULL(MAX(CAST(LTRIM(LFDPATINFOART) AS INT)), -1) + 1 FROM PATINFO \
              WHERE LTRIM(RTRIM(PATNR)) = @P1 AND DATUM = @P2 AND ART = @P3",
@@ -328,42 +328,7 @@ async fn write_anamnese(conn: &mut Z1Connection, patnr: &str, lines: &[String]) 
         .await?;
 
     conn.simple("BEGIN TRANSACTION").await?;
-    let result = async {
-        let mut inserted = 0usize;
-        for line in &clean {
-            let lfd = pad_left(&next.to_string(), 4);
-            let rinfo = fresh_rinfo(None);
-            let mut info = line.clone();
-            if info.len() > PATINFO_INFO_MAX {
-                info.truncate(PATINFO_INFO_MAX);
-            }
-            // Feste Felder wie Nelly: LEBID=Behandler, ART=1, PID='  0', Rest leer.
-            conn.exec_expect(
-                "INSERT INTO PATINFO \
-                 (RINFO,PATNR,DATUM,LFDPATINFOART,LEBID,ART,INFORMATION,MDID,STATUS,PID,\
-                  FARBE,TERMIN,PLANUNGSART,LFDANAMNESE,LFDFREITEXT,LFDANAMVERSION,\
-                  FRAGEBOGENART,LFDFRAGEBOGEN,LFDFRAGEBOGENENTRY) \
-                 VALUES (@P1,@P2,@P3,@P4,@P5,@P6,@P7,'','','  0','','','','','','','','','')",
-                &[
-                    &rinfo,
-                    &patnr10,
-                    &datum,
-                    &lfd,
-                    &DEFAULT_LEBID,
-                    &ART_ANAMNESE,
-                    &info,
-                ],
-                1,
-            )
-            .await?;
-            inserted += 1;
-            next += 1;
-        }
-        Ok::<usize, ConnectorError>(inserted)
-    }
-    .await;
-
-    match result {
+    match insert_anamnese_rows(conn, &clean, &datum, &patnr10, next).await {
         Ok(n) => {
             conn.simple("COMMIT").await?;
             Ok(n)
@@ -373,6 +338,51 @@ async fn write_anamnese(conn: &mut Z1Connection, patnr: &str, lines: &[String]) 
             Err(e)
         }
     }
+}
+
+/// Fügt die Anamnese-Zeilen ein (innerhalb der offenen Transaktion des Aufrufers).
+/// Ausgelagert, damit `conn` nicht in einem Inline-`async`-Block geborgt wird.
+async fn insert_anamnese_rows(
+    conn: &mut Z1Connection,
+    lines: &[String],
+    datum: &str,
+    patnr10: &str,
+    start_lfd: i32,
+) -> Result<usize> {
+    let patnr10 = patnr10.to_string();
+    let datum = datum.to_string();
+    let mut next = start_lfd;
+    let mut inserted = 0usize;
+    for line in lines {
+        let lfd = pad_left(&next.to_string(), 4);
+        let rinfo = fresh_rinfo(None);
+        let mut info = line.clone();
+        if info.len() > PATINFO_INFO_MAX {
+            info.truncate(PATINFO_INFO_MAX);
+        }
+        // Feste Felder wie Nelly: LEBID=Behandler, ART=1, PID='  0', Rest leer.
+        conn.exec_expect(
+            "INSERT INTO PATINFO \
+             (RINFO,PATNR,DATUM,LFDPATINFOART,LEBID,ART,INFORMATION,MDID,STATUS,PID,\
+              FARBE,TERMIN,PLANUNGSART,LFDANAMNESE,LFDFREITEXT,LFDANAMVERSION,\
+              FRAGEBOGENART,LFDFRAGEBOGEN,LFDFRAGEBOGENENTRY) \
+             VALUES (@P1,@P2,@P3,@P4,@P5,@P6,@P7,'','','  0','','','','','','','','','')",
+            &[
+                &rinfo,
+                &patnr10,
+                &datum,
+                &lfd,
+                &DEFAULT_LEBID,
+                &ART_ANAMNESE,
+                &info,
+            ],
+            1,
+        )
+        .await?;
+        inserted += 1;
+        next += 1;
+    }
+    Ok(inserted)
 }
 
 // ── Cloud-Anbindung: Aufnahme-Bündel ziehen und zurückschreiben ──────────────
