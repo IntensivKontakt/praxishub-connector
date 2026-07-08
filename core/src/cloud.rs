@@ -120,7 +120,7 @@ pub struct PendingWriteback {
 /// aus `status`=genehmigt + eigener Terminplanung (Termine nicht in Z1).
 ///
 /// **Backend-Vertrag offen:** `POST /api/v1/connector/z1/hkp-status`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct HkpCaseReport {
     /// Stabiler Fall-Schlüssel (`PATNR|LFDBEFUND`).
     pub case_key: String,
@@ -155,7 +155,7 @@ pub struct HkpCaseReport {
 }
 
 /// Ein einzelner Plan innerhalb eines Falls (fürs Drawer).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct HkpPlanEntry {
     pub plan_no: String,
     /// `GAV` (Regelversorgung/Kasse) | `AAV` (andersartig/privat).
@@ -173,7 +173,7 @@ pub struct HkpPlanEntry {
 }
 
 /// Ein EBZ-Vorgang eines Plans (fürs Drawer-Timeline).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct HkpSubmission {
     /// `antrag` | `antwort` | `rueckfrage` | `nachreichung`.
     pub kind: String,
