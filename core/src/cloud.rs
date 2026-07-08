@@ -105,37 +105,33 @@ pub struct PendingWriteback {
     pub anamnese: Vec<String>,
 }
 
-/// Der aktuelle Lifecycle-Status eines HKP-/EBZ-Plans samt Detaildaten fürs
-/// Praxishub-Tracking-Modul (Detail-Drawer) und dem Voll-HKP-XML zum Rendern.
+/// Ein **HKP-Fall** (`PATNR`+`LFDBEFUND`) fürs Praxishub-Tracking-Modul: eine
+/// Kachel pro Fall, Status vom führenden (GAV-)Plan, plus alle Pläne des Falls
+/// (GAV-Kassenplan + AAV-Privatalternative) mit ihrem EBZ-Verlauf fürs Drawer.
 /// Ersetzt den KIM-Weg ([`HkpReport`]) durch den DB-Weg.
 ///
-/// Wird gemeldet, sobald sich der `status` eines Plans ändert (Transition).
-/// Die Cloud upsertet je `plan_key` (letzter Status gewinnt).
+/// Wird gemeldet, sobald sich der `status` des Falls ändert. Cloud upsertet je
+/// `case_key`. `status` ∈ { `erstellt`, `versendet`, `rueckfrage`, `genehmigt`,
+/// `abgelehnt`, `abgelaufen`, `eingegliedert`, `abgerechnet` } (`signiert`→`erstellt`).
 ///
-/// `status` ∈ { `erstellt`, `versendet`, `rueckfrage`, `genehmigt`, `abgelehnt`,
-/// `abgelaufen`, `eingegliedert`, `abgerechnet` }. (`signiert` → `erstellt`;
-/// der Terminierungs-Status kommt Praxishub-seitig, nicht aus Z1.)
-///
-/// **`abgelaufen`** = genehmigt, aber nicht eingegliedert und entweder in Z1
-/// deaktiviert (`PLANSTATUS=6`/`DEAKTIVIERTDATUM`) **oder** über die Gültigkeit
-/// (Genehmigung + 6 Monate) hinaus → **verlorener Umsatz** / Re-Engagement-Kandidat.
-/// `genehmigt` (noch gültig, nicht eingegliedert) = Terminierungs-Kandidat.
-/// `valid_until` gibt das errechnete Gültigkeitsende — Praxishub kann „Tage bis
-/// Ablauf" und „genehmigt & nicht terminiert" daraus + eigener Terminplanung bilden.
+/// **`abgelaufen`** = genehmigt, nicht eingegliedert, in Z1 deaktiviert
+/// (`DEAKTIVIERTDATUM`) **oder** über Gültigkeit (Genehmigung+6M) → verlorener Umsatz.
+/// `valid_until` → „Tage bis Ablauf"; „genehmigt & nicht terminiert" bildet Praxishub
+/// aus `status`=genehmigt + eigener Terminplanung (Termine nicht in Z1).
 ///
 /// **Backend-Vertrag offen:** `POST /api/v1/connector/z1/hkp-status`.
 #[derive(Debug, Serialize)]
-pub struct HkpStatusReport {
-    /// Stabiler Plan-Schlüssel (`PATNR|LFDPLAN`).
-    pub plan_key: String,
+pub struct HkpCaseReport {
+    /// Stabiler Fall-Schlüssel (`PATNR|LFDBEFUND`).
+    pub case_key: String,
     pub patient_id: String,
-    pub plan_no: String,
-    pub antragsnummer: String,
-    /// Dekodierte Planart, z. B. `eHKP`, `ePAR`, `eKBR/KGL`.
+    /// Befund-/Fallnummer (`LFDBEFUND`).
+    pub befund_no: String,
+    /// Dekodierte Planart des Falls (`eHKP`, `ePAR`, `eKBR/KGL`).
     pub planart: String,
-    /// Aktueller Lifecycle-Status (s. o.).
+    /// Aktueller Fall-Status = Status des führenden GAV-Plans.
     pub status: String,
-    // Meilenstein-Daten (`JJJJMMTT`), soweit erreicht — für die Timeline im Drawer.
+    // Meilenstein-Daten des führenden Plans (`JJJJMMTT`), soweit erreicht.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_on: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -148,13 +144,44 @@ pub struct HkpStatusReport {
     pub inserted_on: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub billed_on: Option<String>,
-    /// Errechnetes Gültigkeitsende (Genehmigung + 6 Monate) — für „Tage bis Ablauf".
+    /// Gültigkeitsende (Genehmigung + 6 Monate) des führenden Plans.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valid_until: Option<String>,
-    /// Vollständiges GKV-EEBZ0-XML (Base64) aus `FILEPOOL` — Praxishub rendert es
-    /// per KZBV-XSLT als HKP-Ansicht („PDF"). `None`, wenn (noch) nicht vorhanden.
+    /// Voll-HKP-EEBZ0-XML (Base64) des führenden Plans — Rendern per KZBV-XSLT.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ehkp_xml_b64: Option<String>,
+    /// Alle Pläne des Falls (GAV + AAV) mit EBZ-Verlauf — für den Drawer.
+    pub plans: Vec<HkpPlanEntry>,
+}
+
+/// Ein einzelner Plan innerhalb eines Falls (fürs Drawer).
+#[derive(Debug, Serialize)]
+pub struct HkpPlanEntry {
+    pub plan_no: String,
+    /// `GAV` (Regelversorgung/Kasse) | `AAV` (andersartig/privat).
+    pub variant: String,
+    /// Der führende GAV-Plan, der den Fall-Status bestimmt.
+    pub is_primary: bool,
+    pub planart: String,
+    pub antragsnummer: String,
+    /// Plan-Status (AAV ohne EBZ = `privat`).
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planned_on: Option<String>,
+    /// EBZ-Verlauf dieses Plans (Anträge, Antworten, Rückfragen, Nachreichungen).
+    pub submissions: Vec<HkpSubmission>,
+}
+
+/// Ein EBZ-Vorgang eines Plans (fürs Drawer-Timeline).
+#[derive(Debug, Serialize)]
+pub struct HkpSubmission {
+    /// `antrag` | `antwort` | `rueckfrage` | `nachreichung`.
+    pub kind: String,
+    /// Relevantes Datum (`JJJJMMTT`).
+    pub date: String,
+    /// Bei Antworten: `genehmigt` | `abgelehnt`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -250,9 +277,9 @@ impl CloudClient {
         Ok(())
     }
 
-    /// Meldet eine aus der Z1-DB gelesene HKP-Entscheidung (DB-Weg, ersetzt KIM).
+    /// Meldet einen aus der Z1-DB gelesenen HKP-Fall (DB-Weg, ersetzt KIM).
     /// **Backend-Vertrag offen:** `POST /api/v1/connector/z1/hkp-status`.
-    pub async fn report_hkp_status(&self, report: &HkpStatusReport) -> Result<()> {
+    pub async fn report_hkp_case(&self, report: &HkpCaseReport) -> Result<()> {
         self.auth(self.http.post(self.url("z1/hkp-status")))
             .json(report)
             .send()

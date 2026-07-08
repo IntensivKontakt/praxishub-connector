@@ -212,6 +212,15 @@ nötig) → `genehmigt`/`abgelehnt` (DOKART=3 ZUGESTELLT) → `eingegliedert`
 (ZEHIT.EINGLIEDERUNGSDATUM) → `abgerechnet` (**nur** ZPLAN.KZVABRDATUM;
 KZVEINREICHDATUM ist die Einreichung, schon bei Genehmigung gesetzt — NICHT Abrechnung).
 
+**Fall-Gruppierung (eine Kachel pro Fall, nicht pro Plan):** Fall = `(PATNR, LFDBEFUND)`.
+Ein Fall bündelt den **GAV-Plan** (`PLANART='3'`, Kasse, EBZ-getrackt) + die **AAV-Variante**
+(`PLANART='a'`, private Alternative, verknüpft via `LFDAPLAN`, kein EBZ-Status → `privat`).
+Rückfrage-Nachreichungen = **derselbe LFDPLAN** (mehrere EBZ-Zeilen, im Verlauf). Echte
+Um-Planung = neuer LFDPLAN+LFDBEFUND, **kein** Z1-Vorgänger-Link (`UPTALTPLAN`=IK-Nr!). Der
+Poller meldet **fall-zentriert** (`HkpCaseReport`): Fall-Status vom führenden GAV-Plan +
+Meilenstein-Daten + Voll-HKP-XML + `plans[]` (alle Pläne des Falls mit EBZ-`submissions[]`
+= Antrag/Antwort/Rückfrage/Nachreichung) fürs Detail-Drawer.
+
 **★ `abgelaufen` (Werthebel):** genehmigt, aber nicht eingegliedert und entweder in Z1
 deaktiviert (`PLANSTATUS=6`/`DEAKTIVIERTDATUM`) **oder** über die Gültigkeit
 (Genehmigung + 6 Monate) hinaus. Praxis-Realität (verifiziert 2026-07-08, eHKP): 509
