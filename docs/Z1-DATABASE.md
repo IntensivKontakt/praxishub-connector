@@ -170,6 +170,15 @@ die eGK-Kartendaten** (`VDESC`/VSD), nicht Patienten-Selbsteingabe. Diese Felder
 sich beim Kartenstecken. Genuin additiv aus der Aufnahme: **Kontaktdaten (Tel./E-Mail)**
 und **medizinische Anamnese (Allergien, Medikamente, Vorerkrankungen)**.
 
+**Patienten-Matching fürs Rückschreiben (Vorab-Aufnahme):** `z1db/lookup.rs::resolve_patient`
++ `matching.rs`. Kandidaten aus `PAT`(+`ADR` für PLZ) per exaktem Geburtsdatum, plus
+Fallback PLZ+Namenspräfix (fängt Geburtsdatum-Tippfehler). Bewertung mit **Damerau-Edit-
+Distanz** (Tippfehler/Transposition = 1 Edit) + PLZ-Bonus → `Matched` (sicher, auto),
+`Review` (nah dran/mehrdeutig → **manuelle Zuordnung ans Team** via `…/writeback/{id}/
+unmatched` mit Kandidaten), `NotFound` (noch nicht in Z1 → zurückstellen). So füllt der
+Patient die Anamnese **vorab** aus; sobald er per Kartenstecken in Z1 landet, matcht der
+nächste Poll und schreibt automatisch — **kein Neupatient-Anlegen nötig**.
+
 **Empfehlung:** DB = **Lese**-Weg (Status, Voll-HKP, Stammdaten, Matching). **Schreiben**
 über VDDS-media (Dokumente). Strukturiertes Rückschreiben nur als bewusstes, separat
 freigegebenes Feature — vorher gegen eine **Test-/Backup-DB** validieren und prüfen, ob

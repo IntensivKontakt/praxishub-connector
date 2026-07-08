@@ -208,6 +208,141 @@ pub enum MatchResult<T> {
     Ambiguous(usize),
 }
 
+// ── Fuzzy-Zuordnung (höhere Trefferquote) ────────────────────────────────────
+//
+// Ziel: möglichst viele Aufnahmen automatisch zuordnen (leichte Tippfehler in
+// Namen/Geburtsdatum tolerieren, PLZ als starken Bestätiger nutzen), ABER bei
+// Unsicherheit NIE raten — dann geht der Fall zur manuellen Zuordnung ans Team.
+
+/// Edit-Distanz (Damerau/OSA): Einfügen/Löschen/Ersetzen **und benachbarte
+/// Transposition** je 1 Edit — so zählt „Groth"↔„Groht" als 1 (häufiger Tippfehler).
+pub fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (n, m) = (a.len(), b.len());
+    if n == 0 {
+        return m;
+    }
+    if m == 0 {
+        return n;
+    }
+    let mut d = vec![vec![0usize; m + 1]; n + 1];
+    for i in 0..=n {
+        d[i][0] = i;
+    }
+    for j in 0..=m {
+        d[0][j] = j;
+    }
+    for i in 1..=n {
+        for j in 1..=m {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            let mut v = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                v = v.min(d[i - 2][j - 2] + 1); // benachbarte Transposition
+            }
+            d[i][j] = v;
+        }
+    }
+    d[n][m]
+}
+
+/// Konfidenz-Score (0–115) eines Kandidaten gegen den Gesuchten. Namen/Geburts-
+/// datum sind bereits normalisiert (siehe [`PatientKey`]); leichte Tippfehler
+/// zählen abgestuft, PLZ-Gleichheit gibt einen Bonus.
+pub fn confidence(w: &PatientKey, w_zip: Option<&str>, c: &PatientKey, c_zip: Option<&str>) -> u32 {
+    let ld = edit_distance(&w.last_name, &c.last_name);
+    let fd = edit_distance(&w.first_name, &c.first_name);
+    let dob_eq = !w.birth_date.is_empty() && w.birth_date == c.birth_date;
+    let dob_close = !dob_eq
+        && !w.birth_date.is_empty()
+        && !c.birth_date.is_empty()
+        && edit_distance(&w.birth_date, &c.birth_date) <= 1;
+    let plz_eq = matches!(
+        (
+            w_zip.map(normalize_name).filter(|s| !s.is_empty()),
+            c_zip.map(normalize_name).filter(|s| !s.is_empty()),
+        ),
+        (Some(a), Some(b)) if a == b
+    );
+
+    let mut s = 0u32;
+    s += match ld {
+        0 => 45,
+        1 => 33,
+        2 => 20,
+        _ => 0,
+    };
+    if !w.first_name.is_empty() && !c.first_name.is_empty() {
+        s += match fd {
+            0 => 25,
+            1 => 17,
+            2 => 8,
+            _ => 0,
+        };
+    }
+    if dob_eq {
+        s += 30;
+    } else if dob_close {
+        s += 12;
+    }
+    if plz_eq {
+        s += 15;
+    }
+    s
+}
+
+/// Auto-Match ab diesem Score (und mit klarem Vorsprung), sonst Review.
+pub const ACCEPT: u32 = 85;
+/// Ab diesem Score gilt ein Kandidat als „nah dran" → Review statt NotFound.
+pub const REVIEW: u32 = 55;
+const MIN_LEAD: u32 = 10;
+
+/// Ergebnis der Fuzzy-Zuordnung.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Resolution<T> {
+    /// Sicher genug → automatisch zuordnen.
+    Matched(T),
+    /// Nah dran, aber unsicher/mehrdeutig → **manuell** ans Team (mit Kandidaten).
+    Review(Vec<T>),
+    /// Niemand nah genug → Patient (noch) nicht in Z1 → später erneut versuchen.
+    NotFound,
+}
+
+/// Ordnet den Gesuchten einem Kandidaten zu: bester Score ≥ [`ACCEPT`] **und** mit
+/// klarem Vorsprung → [`Resolution::Matched`]; mind. ein Kandidat ≥ [`REVIEW`], aber
+/// unsicher → [`Resolution::Review`]; sonst [`Resolution::NotFound`].
+pub fn resolve_fuzzy<T: Clone>(
+    wanted: &PatientKey,
+    wanted_zip: Option<&str>,
+    candidates: &[Candidate<T>],
+) -> Resolution<T> {
+    if wanted.last_name.is_empty() {
+        return Resolution::NotFound;
+    }
+    let mut scored: Vec<(u32, &Candidate<T>)> = candidates
+        .iter()
+        .map(|c| (confidence(wanted, wanted_zip, &c.key, c.zip.as_deref()), c))
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+
+    let Some(&(best, top)) = scored.first() else {
+        return Resolution::NotFound;
+    };
+    if best < REVIEW {
+        return Resolution::NotFound;
+    }
+    let second = scored.get(1).map(|x| x.0).unwrap_or(0);
+    if best >= ACCEPT && best - second >= MIN_LEAD {
+        return Resolution::Matched(top.payload.clone());
+    }
+    let near: Vec<T> = scored
+        .iter()
+        .filter(|(s, _)| *s >= REVIEW)
+        .map(|(_, c)| c.payload.clone())
+        .collect();
+    Resolution::Review(near)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,5 +480,72 @@ mod tests {
             cand("Groth", "Max", "23.02.2001", Some("88888"), None, "18001"),
         ];
         assert_eq!(resolve_unique(&wanted, Some("10709"), None, &cands), MatchResult::Ambiguous(2));
+    }
+
+    // ── Fuzzy ────────────────────────────────────────────────────────────────
+    #[test]
+    fn edit_distance_basis() {
+        assert_eq!(edit_distance("groth", "groth"), 0);
+        assert_eq!(edit_distance("groth", "groht"), 1); // benachbarte Transposition = 1
+        assert_eq!(edit_distance("meier", "mayer"), 2); // zwei Ersetzungen (keine Transposition)
+        assert_eq!(edit_distance("", "abc"), 3);
+    }
+
+    #[test]
+    fn fuzzy_exakt_wird_gematcht() {
+        let w = PatientKey::new("Groth", "Nikolas", "23.02.2001");
+        let c = vec![cand("Groth", "Nikolas", "23.02.2001", Some("10709"), None, "16006")];
+        assert_eq!(resolve_fuzzy(&w, Some("10709"), &c), Resolution::Matched("16006".to_string()));
+    }
+
+    #[test]
+    fn fuzzy_namenstippfehler_mit_gebdat_wird_gematcht() {
+        // "Groht" statt "Groth" (1 Edit), Vorname + Geburtsdatum exakt → Auto-Match.
+        let w = PatientKey::new("Groht", "Nikolas", "23.02.2001");
+        let c = vec![cand("Groth", "Nikolas", "23.02.2001", None, None, "16006")];
+        assert_eq!(resolve_fuzzy(&w, None, &c), Resolution::Matched("16006".to_string()));
+    }
+
+    #[test]
+    fn fuzzy_gebdat_tippfehler_mit_plz_wird_gematcht() {
+        // Geburtsdatum um eine Ziffer daneben, aber Name exakt + PLZ passt → Match.
+        let w = PatientKey::new("Groth", "Nikolas", "23.02.2001");
+        let c = vec![cand("Groth", "Nikolas", "23.02.2011", Some("10709"), None, "16006")];
+        assert_eq!(resolve_fuzzy(&w, Some("10709"), &c), Resolution::Matched("16006".to_string()));
+    }
+
+    #[test]
+    fn fuzzy_zwillinge_gehen_ins_review() {
+        // Zwei identische Namensvettern ohne unterscheidende PLZ → Review, nicht raten.
+        let w = PatientKey::new("Groth", "Max", "23.02.2001");
+        let c = vec![
+            cand("Groth", "Max", "23.02.2001", None, None, "16006"),
+            cand("Groth", "Max", "23.02.2001", None, None, "18001"),
+        ];
+        match resolve_fuzzy(&w, None, &c) {
+            Resolution::Review(v) => assert_eq!(v.len(), 2),
+            other => panic!("erwartet Review, war {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fuzzy_gebdat_daneben_ohne_plz_geht_ins_review() {
+        // Geburtsdatum daneben, keine PLZ-Bestätigung → nicht sicher genug → Review.
+        let w = PatientKey::new("Groth", "Nikolas", "23.02.2001");
+        let c = vec![cand("Groth", "Nikolas", "23.02.2011", None, None, "16006")];
+        assert!(matches!(resolve_fuzzy(&w, None, &c), Resolution::Review(_)));
+    }
+
+    #[test]
+    fn fuzzy_niemand_nah_ist_notfound() {
+        let w = PatientKey::new("Groth", "Nikolas", "23.02.2001");
+        let c = vec![cand("Petersen", "Anna", "01.01.1970", Some("22222"), None, "17000")];
+        assert_eq!(resolve_fuzzy(&w, Some("10709"), &c), Resolution::NotFound);
+    }
+
+    #[test]
+    fn fuzzy_leere_kandidaten_ist_notfound() {
+        let w = PatientKey::new("Groth", "Nikolas", "23.02.2001");
+        assert_eq!(resolve_fuzzy(&w, None, &[]), Resolution::NotFound);
     }
 }

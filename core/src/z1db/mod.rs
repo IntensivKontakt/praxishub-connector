@@ -27,7 +27,7 @@ pub mod writeback;
 pub use bootstrap::create_readonly_login;
 pub use client::{connect, Z1Connection};
 pub use hkp::spawn as spawn_hkp_poller;
-pub use lookup::resolve_patnr;
+pub use lookup::resolve_patient;
 pub use writeback::{
     apply_writeback, spawn as spawn_writeback, ContactData, PatientWriteback, WritebackReport,
 };

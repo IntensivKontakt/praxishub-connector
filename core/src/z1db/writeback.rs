@@ -565,16 +565,23 @@ async fn run_cycle(
             continue;
         }
         match process_one(&mut conn, cfg, wb).await {
-            Ok(Some(patnr)) => {
+            Ok(Outcome::Applied(patnr)) => {
                 applied.insert(wb.id.clone());
                 if let Err(e) = cloud.ack_writeback_applied(&wb.id, &patnr).await {
                     warn!(id=%wb.id, error=%e, "Writeback angewandt, Ack fehlgeschlagen (wird nachgeholt)");
                 }
             }
-            Ok(None) => {
-                // Patient (noch) nicht auflösbar → zurückstellen, NICHT schreiben,
-                // NICHT acken. Ein späterer Zyklus versucht es erneut.
-                debug!(id=%wb.id, "Writeback zurückgestellt: Patient nicht eindeutig auflösbar");
+            Ok(Outcome::Review(candidates)) => {
+                // Nah dran, aber unsicher/mehrdeutig → NICHT schreiben, sondern dem
+                // Team zur manuellen Zuordnung geben (Signalwirkung im Praxishub-FE).
+                warn!(id=%wb.id, kandidaten=candidates.len(), "Writeback: Patient nicht eindeutig — zur manuellen Zuordnung eskaliert");
+                let _ = cloud
+                    .ack_writeback_unmatched(&wb.id, "nicht eindeutig zuzuordnen", &candidates)
+                    .await;
+            }
+            Ok(Outcome::Deferred) => {
+                // Niemand nah → Patient (noch) nicht in Z1 → zurückstellen, erneut versuchen.
+                debug!(id=%wb.id, "Writeback zurückgestellt: Patient noch nicht in Z1");
             }
             Err(e) => {
                 warn!(id=%wb.id, error=%e, "Writeback fehlgeschlagen");
@@ -585,32 +592,46 @@ async fn run_cycle(
     Ok(())
 }
 
-/// Verarbeitet ein Bündel. Rückgabe:
-///   * `Ok(Some(patnr))` — angewandt
-///   * `Ok(None)`        — zurückgestellt (Patient nicht eindeutig auflösbar)
-///   * `Err(_)`          — echter Fehler
+/// Ergebnis der Bündel-Verarbeitung.
+enum Outcome {
+    /// Angewandt (mit getroffener PATNR).
+    Applied(String),
+    /// Nicht eindeutig → manuelle Zuordnung nötig (nahe PATNR-Kandidaten).
+    Review(Vec<String>),
+    /// Patient (noch) nicht in Z1 → zurückstellen, später erneut.
+    Deferred,
+}
+
+/// Verarbeitet ein Bündel: PATNR bestimmen (geliefert oder Fuzzy-Lookup), dann
+/// anwenden — oder je nach Auflösbarkeit eskalieren/zurückstellen.
 async fn process_one(
     conn: &mut Z1Connection,
     cfg: &ConnectorConfig,
     wb: &PendingWriteback,
-) -> Result<Option<String>> {
-    // PATNR bestimmen: geliefert → sonst Name+Geburtsdatum-Lookup.
-    let patnr = {
-        let given = wb.patient_id.trim();
-        if !given.is_empty() {
-            given.to_string()
-        } else {
-            match crate::z1db::resolve_patnr(conn, &wb.last_name, &wb.first_name, &wb.birth_date)
-                .await?
-            {
-                Some(p) => p,
-                None => return Ok(None), // zurückstellen (kein Neupatient-Pfad hier)
-            }
+) -> Result<Outcome> {
+    use crate::matching::Resolution;
+
+    let given = wb.patient_id.trim();
+    let patnr = if !given.is_empty() {
+        given.to_string()
+    } else {
+        match crate::z1db::resolve_patient(
+            conn,
+            &wb.last_name,
+            &wb.first_name,
+            &wb.birth_date,
+            wb.zip.as_deref(),
+        )
+        .await?
+        {
+            Resolution::Matched(p) => p,
+            Resolution::Review(cands) => return Ok(Outcome::Review(cands)),
+            Resolution::NotFound => return Ok(Outcome::Deferred),
         }
     };
 
     let mut data = PatientWriteback::from(wb);
     data.patient_id = patnr.clone();
     apply_writeback(conn, cfg, &data).await?;
-    Ok(Some(patnr))
+    Ok(Outcome::Applied(patnr))
 }

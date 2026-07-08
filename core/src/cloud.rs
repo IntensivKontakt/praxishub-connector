@@ -199,6 +199,13 @@ struct FailedBody<'a> {
 }
 
 #[derive(Debug, Serialize)]
+struct UnmatchedBody<'a> {
+    reason: &'a str,
+    /// Nahe Z1-PATNR-Kandidaten für die manuelle Zuordnung durch das Team.
+    candidates: &'a [String],
+}
+
+#[derive(Debug, Serialize)]
 struct Heartbeat<'a> {
     version: &'a str,
     vdds_registered: bool,
@@ -332,6 +339,30 @@ impl CloudClient {
                 .post(self.url(&format!("z1/writeback/{id}/failed"))),
         )
         .json(&FailedBody { reason })
+        .send()
+        .await
+        .map_err(|e| ConnectorError::Http(e.to_string()))?
+        .error_for_status()
+        .map_err(|e| ConnectorError::Http(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Meldet, dass der Patient **nicht sicher** zugeordnet werden konnte (nah dran,
+    /// aber mehrdeutig) → gehört zur **manuellen Zuordnung** durch das Team. Liefert
+    /// die nahen Kandidaten (Z1-PATNRs) mit. Das Backend soll den Fall aus der
+    /// automatischen `pending`-Liste nehmen und dem Team mit **Signalwirkung** zeigen.
+    /// **Backend-Vertrag offen:** `POST /api/v1/connector/z1/writeback/{id}/unmatched`.
+    pub async fn ack_writeback_unmatched(
+        &self,
+        id: &str,
+        reason: &str,
+        candidates: &[String],
+    ) -> Result<()> {
+        self.auth(
+            self.http
+                .post(self.url(&format!("z1/writeback/{id}/unmatched"))),
+        )
+        .json(&UnmatchedBody { reason, candidates })
         .send()
         .await
         .map_err(|e| ConnectorError::Http(e.to_string()))?
