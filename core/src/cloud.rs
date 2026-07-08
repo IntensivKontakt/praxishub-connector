@@ -68,6 +68,65 @@ pub struct PendingDocument {
     pub pdf_base64: String,
 }
 
+/// Ein von der Cloud geliefertes Rückschreib-Bündel (digitale Aufnahme → Z1).
+/// Analog zu [`PendingDocument`], aber für **strukturierte** Felder statt PDF.
+///
+/// **Backend-Vertrag offen:** `GET /api/v1/connector/z1/writeback/pending`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PendingWriteback {
+    /// Backend-ID (Idempotenz-/Ack-Schlüssel).
+    pub id: String,
+    /// Z1-`PATNR`, falls dem Backend bekannt (sonst leer → Name/Geburtsdatum-Lookup).
+    #[serde(default)]
+    pub patient_id: String,
+    #[serde(default)]
+    pub last_name: String,
+    #[serde(default)]
+    pub first_name: String,
+    /// Geburtsdatum (Format egal — wird beim Lookup normalisiert).
+    #[serde(default)]
+    pub birth_date: String,
+    #[serde(default)]
+    pub phone: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    /// Straße inkl. Hausnummer.
+    #[serde(default)]
+    pub street: Option<String>,
+    #[serde(default)]
+    pub zip: Option<String>,
+    #[serde(default)]
+    pub city: Option<String>,
+    /// CAVE-/Allergie-Einträge (additiv an die Risikoanamnese).
+    #[serde(default)]
+    pub cave: Vec<String>,
+    /// Krankenanamnese-Zeilen (→ PATINFO).
+    #[serde(default)]
+    pub anamnese: Vec<String>,
+}
+
+/// Eine aus der Z1-DB gelesene HKP-/EBZ-Entscheidung (genehmigt/abgelehnt) samt
+/// vollständigem HKP-XML. Ersetzt den KIM-Weg ([`HkpReport`]) durch den DB-Weg.
+///
+/// **Backend-Vertrag offen:** `POST /api/v1/connector/z1/hkp-status`.
+#[derive(Debug, Serialize)]
+pub struct HkpStatusReport {
+    /// Stabiler Dedup-Schlüssel (`PATNR|LFDPLAN|LFDNR|ERHALTDATUM`).
+    pub source_key: String,
+    pub patient_id: String,
+    pub plan_no: String,
+    pub antragsnummer: String,
+    /// Dekodierte Planart, z. B. `eHKP`, `ePAR`, `eKBR/KGL`.
+    pub planart: String,
+    /// `"genehmigt"` | `"abgelehnt"`.
+    pub status: String,
+    /// Entscheidungsdatum (`JJJJMMTT`).
+    pub decided_on: String,
+    /// Vollständiges GKV-EEBZ0-XML (Base64), aus `FILEPOOL` — sofern vorhanden.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ehkp_xml_b64: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct FiledBody<'a> {
     patient_id: &'a str,
@@ -158,6 +217,66 @@ impl CloudClient {
             .map_err(|e| ConnectorError::Http(e.to_string()))?
             .error_for_status()
             .map_err(|e| ConnectorError::Http(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Meldet eine aus der Z1-DB gelesene HKP-Entscheidung (DB-Weg, ersetzt KIM).
+    /// **Backend-Vertrag offen:** `POST /api/v1/connector/z1/hkp-status`.
+    pub async fn report_hkp_status(&self, report: &HkpStatusReport) -> Result<()> {
+        self.auth(self.http.post(self.url("z1/hkp-status")))
+            .json(report)
+            .send()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| ConnectorError::Http(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Holt anstehende Rückschreib-Bündel (digitale Aufnahme → Z1).
+    /// **Backend-Vertrag offen:** `GET /api/v1/connector/z1/writeback/pending`.
+    pub async fn fetch_pending_writebacks(&self) -> Result<Vec<PendingWriteback>> {
+        let resp = self
+            .auth(self.http.get(self.url("z1/writeback/pending")))
+            .send()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| ConnectorError::Http(e.to_string()))?;
+        resp.json::<Vec<PendingWriteback>>()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))
+    }
+
+    /// Quittiert ein erfolgreich in Z1 zurückgeschriebenes Bündel.
+    /// **Backend-Vertrag offen:** `POST /api/v1/connector/z1/writeback/{id}/applied`.
+    pub async fn ack_writeback_applied(&self, id: &str, patient_id: &str) -> Result<()> {
+        self.auth(
+            self.http
+                .post(self.url(&format!("z1/writeback/{id}/applied"))),
+        )
+        .json(&FiledBody { patient_id, matched_by: "z1db" })
+        .send()
+        .await
+        .map_err(|e| ConnectorError::Http(e.to_string()))?
+        .error_for_status()
+        .map_err(|e| ConnectorError::Http(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Meldet, dass ein Rückschreib-Bündel (noch) nicht angewandt werden konnte.
+    /// **Backend-Vertrag offen:** `POST /api/v1/connector/z1/writeback/{id}/failed`.
+    pub async fn ack_writeback_failed(&self, id: &str, reason: &str) -> Result<()> {
+        self.auth(
+            self.http
+                .post(self.url(&format!("z1/writeback/{id}/failed"))),
+        )
+        .json(&FailedBody { reason })
+        .send()
+        .await
+        .map_err(|e| ConnectorError::Http(e.to_string()))?
+        .error_for_status()
+        .map_err(|e| ConnectorError::Http(e.to_string()))?;
         Ok(())
     }
 

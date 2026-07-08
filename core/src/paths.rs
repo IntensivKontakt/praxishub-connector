@@ -26,6 +26,17 @@ pub fn seen_store_file() -> Result<PathBuf> {
     Ok(config_dir()?.join("seen_uidls.json"))
 }
 
+/// Dedup-Store des Z1-HKP-Pollers (`seen_hkp.json`) — gemeldete EBZ-Entscheidungen.
+pub fn hkp_seen_store_file() -> Result<PathBuf> {
+    Ok(config_dir()?.join("seen_hkp.json"))
+}
+
+/// Dedup-Store bereits angewandter Rückschreib-Bündel (`applied_writebacks.json`)
+/// — verhindert Doppel-Anwendung (z. B. CAVE/Anamnese) bei fehlgeschlagenem Ack.
+pub fn writeback_seen_store_file() -> Result<PathBuf> {
+    Ok(config_dir()?.join("applied_writebacks.json"))
+}
+
 /// Log-Verzeichnis.
 pub fn log_dir() -> Result<PathBuf> {
     let dir = project_dirs()?.data_dir().join("logs");

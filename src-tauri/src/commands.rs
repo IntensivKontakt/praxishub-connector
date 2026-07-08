@@ -171,6 +171,19 @@ pub(crate) async fn start_watcher(app: &AppHandle) {
         *state.doc_watcher.lock().await = Some(handle);
     }
 
+    // Z1-HKP-Poller (EBZ-Status → Cloud): braucht Z1-DB-Lesen + Cloud. Ersetzt
+    // perspektivisch den KIM-Watcher, läuft aber unabhängig davon.
+    if cfg.z1db_read_ready() && cfg.cloud_ready() {
+        let handle = connector_core::z1db::spawn_hkp_poller(cfg.clone());
+        *state.hkp_poller.lock().await = Some(handle);
+    }
+
+    // Z1-Writeback (Cloud → Z1): braucht schreibfähigen Login + aktiven Toggle.
+    if cfg.z1db_write_ready() && cfg.cloud_ready() {
+        let handle = connector_core::z1db::spawn_writeback(cfg.clone());
+        *state.writeback_loop.lock().await = Some(handle);
+    }
+
     // KIM-Watcher: braucht zusätzlich ein konfiguriertes KIM-Postfach.
     if !cfg.kim_ready() || !cfg.cloud_ready() {
         state
@@ -191,10 +204,18 @@ pub(crate) async fn stop_watcher(app: &AppHandle) {
     // .await hinaus und borgt `state` zu lange (E0597).
     let watcher = state.watcher.lock().await.take();
     let doc_watcher = state.doc_watcher.lock().await.take();
+    let hkp_poller = state.hkp_poller.lock().await.take();
+    let writeback_loop = state.writeback_loop.lock().await.take();
     if let Some(handle) = watcher {
         handle.stop().await;
     }
     if let Some(handle) = doc_watcher {
+        handle.stop().await;
+    }
+    if let Some(handle) = hkp_poller {
+        handle.stop().await;
+    }
+    if let Some(handle) = writeback_loop {
         handle.stop().await;
     }
 }

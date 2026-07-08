@@ -8,11 +8,16 @@
 //!   * CAVE    (`writeback_cave`)     → additiv an `PAT.ANAMNESE` (Risikoanamnese)
 //!   * Anamnese(`writeback_anamnese`) → `INSERT INTO PATINFO` (ART=1, wie Nelly)
 
+use crate::cloud::{CloudClient, PendingWriteback};
 use crate::config::ConnectorConfig;
 use crate::error::{ConnectorError, Result};
+use crate::paths;
 use crate::z1db::client::{fresh_rinfo, pad_left, Z1Connection};
+use crate::z1db::{self, LoopHandle};
 use chrono::Local;
-use tracing::{info, warn};
+use std::collections::HashSet;
+use std::time::Duration;
+use tracing::{debug, info, warn};
 
 /// Risikoanamnese-Feld `PAT.ANAMNESE` ist `varchar(80)`.
 const ANAMNESE_MAX: usize = 80;
@@ -363,4 +368,165 @@ async fn write_anamnese(conn: &mut Z1Connection, patnr: &str, lines: &[String]) 
             Err(e)
         }
     }
+}
+
+// ── Cloud-Anbindung: Aufnahme-Bündel ziehen und zurückschreiben ──────────────
+
+/// Persistenter Store bereits angewandter Bündel-IDs (Idempotenz: verhindert
+/// Doppel-Anwendung von CAVE/Anamnese, falls der Cloud-Ack mal fehlschlägt).
+struct AppliedStore {
+    set: HashSet<String>,
+}
+
+impl AppliedStore {
+    fn load() -> Self {
+        let set = paths::writeback_seen_store_file()
+            .ok()
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        Self { set }
+    }
+    fn contains(&self, id: &str) -> bool {
+        self.set.contains(id)
+    }
+    fn insert(&mut self, id: String) {
+        if self.set.insert(id) {
+            if let Ok(p) = paths::writeback_seen_store_file() {
+                let _ = serde_json::to_vec(&self.set).map(|b| std::fs::write(p, b));
+            }
+        }
+    }
+}
+
+impl From<&PendingWriteback> for PatientWriteback {
+    fn from(w: &PendingWriteback) -> Self {
+        let contact = ContactData {
+            phone: w.phone.clone(),
+            email: w.email.clone(),
+            street: w.street.clone(),
+            zip: w.zip.clone(),
+            city: w.city.clone(),
+        };
+        let has_contact = contact.phone.is_some()
+            || contact.email.is_some()
+            || contact.street.is_some()
+            || contact.zip.is_some()
+            || contact.city.is_some();
+        PatientWriteback {
+            patient_id: w.patient_id.clone(),
+            contact: has_contact.then_some(contact),
+            cave: w.cave.clone(),
+            anamnese: w.anamnese.clone(),
+        }
+    }
+}
+
+/// Startet die Rückschreib-Schleife als eigenständigen Task. Läuft nur, wenn ein
+/// schreibfähiger Login + mindestens ein Toggle aktiv sind (`z1db_write_ready`).
+pub fn spawn(cfg: ConnectorConfig) -> LoopHandle {
+    let (tx, mut rx) = tokio::sync::watch::channel(false);
+    let join = tokio::spawn(async move {
+        let cloud = match CloudClient::new(&cfg) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(error=%e, "Writeback: Cloud-Client fehlgeschlagen — Schleife beendet");
+                return;
+            }
+        };
+        let mut applied = AppliedStore::load();
+        let period = Duration::from_secs(cfg.doc_poll_seconds.max(30));
+        let mut ticker = tokio::time::interval(period);
+        info!(period_s = period.as_secs(), "Z1-Writeback-Schleife gestartet");
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    if let Err(e) = run_cycle(&cfg, &cloud, &mut applied).await {
+                        debug!(error=%e, "Writeback-Zyklus fehlgeschlagen");
+                    }
+                }
+                _ = rx.changed() => {
+                    if *rx.borrow() { info!("Z1-Writeback-Schleife gestoppt"); break; }
+                }
+            }
+        }
+    });
+    LoopHandle::new(tx, join)
+}
+
+/// Ein Zyklus: anstehende Bündel holen und (soweit auflösbar) zurückschreiben.
+async fn run_cycle(
+    cfg: &ConnectorConfig,
+    cloud: &CloudClient,
+    applied: &mut AppliedStore,
+) -> Result<()> {
+    let pending = cloud.fetch_pending_writebacks().await?;
+    if pending.is_empty() {
+        return Ok(());
+    }
+    // Schreibfähige Verbindung (kann auch lesen → Patienten-Lookup).
+    let mut conn = z1db::connect(
+        &cfg.z1_db_server,
+        &cfg.z1_db_database,
+        &cfg.z1_db_write_user,
+        &cfg.z1_db_write_password,
+        cfg.z1_db_trust_cert,
+    )
+    .await?;
+
+    for wb in &pending {
+        // Schon angewandt (Ack war evtl. fehlgeschlagen) → nur Ack nachholen.
+        if applied.contains(&wb.id) {
+            let _ = cloud.ack_writeback_applied(&wb.id, wb.patient_id.trim()).await;
+            continue;
+        }
+        match process_one(&mut conn, cfg, wb).await {
+            Ok(Some(patnr)) => {
+                applied.insert(wb.id.clone());
+                if let Err(e) = cloud.ack_writeback_applied(&wb.id, &patnr).await {
+                    warn!(id=%wb.id, error=%e, "Writeback angewandt, Ack fehlgeschlagen (wird nachgeholt)");
+                }
+            }
+            Ok(None) => {
+                // Patient (noch) nicht auflösbar → zurückstellen, NICHT schreiben,
+                // NICHT acken. Ein späterer Zyklus versucht es erneut.
+                debug!(id=%wb.id, "Writeback zurückgestellt: Patient nicht eindeutig auflösbar");
+            }
+            Err(e) => {
+                warn!(id=%wb.id, error=%e, "Writeback fehlgeschlagen");
+                let _ = cloud.ack_writeback_failed(&wb.id, &e.to_string()).await;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Verarbeitet ein Bündel. Rückgabe:
+///   * `Ok(Some(patnr))` — angewandt
+///   * `Ok(None)`        — zurückgestellt (Patient nicht eindeutig auflösbar)
+///   * `Err(_)`          — echter Fehler
+async fn process_one(
+    conn: &mut Z1Connection,
+    cfg: &ConnectorConfig,
+    wb: &PendingWriteback,
+) -> Result<Option<String>> {
+    // PATNR bestimmen: geliefert → sonst Name+Geburtsdatum-Lookup.
+    let patnr = {
+        let given = wb.patient_id.trim();
+        if !given.is_empty() {
+            given.to_string()
+        } else {
+            match crate::z1db::resolve_patnr(conn, &wb.last_name, &wb.first_name, &wb.birth_date)
+                .await?
+            {
+                Some(p) => p,
+                None => return Ok(None), // zurückstellen (kein Neupatient-Pfad hier)
+            }
+        }
+    };
+
+    let mut data = PatientWriteback::from(wb);
+    data.patient_id = patnr.clone();
+    apply_writeback(conn, cfg, &data).await?;
+    Ok(Some(patnr))
 }

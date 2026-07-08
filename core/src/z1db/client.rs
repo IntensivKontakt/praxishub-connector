@@ -130,6 +130,36 @@ impl Z1Connection {
         Ok(())
     }
 
+    /// Liest alle Ergebniszeilen einer Abfrage (Ergebnismenge klein halten).
+    pub(crate) async fn rows(
+        &mut self,
+        sql: &str,
+        params: &[&dyn tiberius::ToSql],
+    ) -> Result<Vec<tiberius::Row>> {
+        self.client
+            .query(sql, params)
+            .await
+            .map_err(z1("Query"))?
+            .into_first_result()
+            .await
+            .map_err(z1("Query"))
+    }
+
+    /// Liest genau eine Zeile (oder `None`).
+    pub(crate) async fn one_row(
+        &mut self,
+        sql: &str,
+        params: &[&dyn tiberius::ToSql],
+    ) -> Result<Option<tiberius::Row>> {
+        self.client
+            .query(sql, params)
+            .await
+            .map_err(z1("Query"))?
+            .into_row()
+            .await
+            .map_err(z1("Query"))
+    }
+
     /// Führt eine einfache (parameterlose) Anweisung aus — z. B. `BEGIN TRAN`.
     pub(crate) async fn simple(&mut self, sql: &str) -> Result<()> {
         self.client
