@@ -34,6 +34,11 @@ pub async fn resolve_patnr(
         return Ok(None);
     }
     let dob_z1 = to_z1_date(birth_date);
+    // Nur bei sauberem 8-stelligen Datum (JJJJMMTT) matchen — sonst kein breiter
+    // GEBDATUM=''-Scan / keine unsichere Zuordnung.
+    if dob_z1.len() != 8 || !dob_z1.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(None);
+    }
     let rows = conn
         .rows(
             "SELECT LTRIM(RTRIM(PATNR)) AS PATNR, ISNULL(PATNAME,'') AS PATNAME, \

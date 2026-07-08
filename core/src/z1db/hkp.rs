@@ -132,15 +132,22 @@ impl StatusStore {
             .unwrap_or_default();
         Self { map }
     }
+    /// Ändert NUR den In-Memory-Stand (kein Disk-IO) — wird nach dem Zyklus
+    /// einmalig über [`persist`](Self::persist) geschrieben. Bei Melde-Fehler
+    /// entfernt der Aufrufer den Eintrag wieder, bevor persistiert wird → korrekter
+    /// Retry auch über Neustarts.
     fn changed(&mut self, key: &str, status: &str) -> bool {
         if self.map.get(key).map(String::as_str) == Some(status) {
             return false;
         }
         self.map.insert(key.to_string(), status.to_string());
+        true
+    }
+    /// Schreibt den Store einmal auf Platte (am Ende eines Poll-Zyklus).
+    fn persist(&self) {
         if let Ok(p) = paths::hkp_seen_store_file() {
             let _ = serde_json::to_vec(&self.map).map(|b| std::fs::write(p, b));
         }
-        true
     }
 }
 
@@ -358,7 +365,19 @@ async fn poll_once(cfg: &ConnectorConfig, cloud: &CloudClient, store: &mut Statu
 
         let pfacts = facts.get(&primary).cloned().unwrap_or_default();
         let status = compute_status(&pfacts, &expiry_cutoff);
-        if !store.changed(&case_key, status) {
+        // Fingerprint statt nur Status-Label → erkennt auch neue Rückfragen/
+        // Antworten oder zusätzliche Pläne (AAV) im Fall, damit das Drawer im
+        // Cloud nicht veraltet, obwohl das Status-Label gleich bleibt.
+        let fingerprint = format!(
+            "{status}|{}|{}|{}|{}|{}|{}",
+            pfacts.versand,
+            pfacts.rueckfrage_date,
+            pfacts.decision_date,
+            pfacts.eingliederung,
+            pfacts.kzvabr,
+            members.len()
+        );
+        if !store.changed(&case_key, &fingerprint) {
             continue;
         }
 
@@ -419,6 +438,7 @@ async fn poll_once(cfg: &ConnectorConfig, cloud: &CloudClient, store: &mut Statu
             }
         }
     }
+    store.persist(); // einmal pro Zyklus, spiegelt nur erfolgreich gemeldete Fälle
     Ok(reported)
 }
 

@@ -271,6 +271,11 @@ async fn append_cave(conn: &mut Z1Connection, patnr: &str, entries: &[String]) -
         if e.is_empty() {
             continue;
         }
+        // Idempotent: schon vorhandenes CAVE nicht erneut anhängen (die Cloud könnte
+        // dasselbe in einem späteren Bündel mitschicken).
+        if text.contains(&format!("CAVE: {e}")) {
+            continue;
+        }
         let addition = if text.is_empty() {
             format!("CAVE: {e}")
         } else {
