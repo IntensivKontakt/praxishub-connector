@@ -209,10 +209,18 @@ Cloud-Verdrahtung umgesetzt: `hkp.rs` (HKP-Poller EBZ→Cloud, `report_hkp_statu
 allen `EBZ`-Zeilen + `ZPLAN`/`ZEHIT` den Status ab und meldet **Statuswechsel**:
 `erstellt` (inkl. signiert) → `versendet` → `rueckfrage` (DOKART=4 der Kasse, Aktion
 nötig) → `genehmigt`/`abgelehnt` (DOKART=3 ZUGESTELLT) → `eingegliedert`
-(ZEHIT.EINGLIEDERUNGSDATUM) → `abgerechnet` (ZPLAN.KZVEINREICH/KZVABRDATUM). Report
-trägt Meilenstein-Daten + **Voll-HKP-EEBZ0-XML** (fürs Detail-Drawer; Rendern per
-KZBV-XSLT = „PDF-Ansicht", ein separates HKP-PDF gibt es in Z1 NICHT). **Terminierungs-
-Status** kommt Praxishub-seitig (Z1-Terminmodul `ETSSTERMIN` hier leer → Doctolib).
+(ZEHIT.EINGLIEDERUNGSDATUM) → `abgerechnet` (**nur** ZPLAN.KZVABRDATUM;
+KZVEINREICHDATUM ist die Einreichung, schon bei Genehmigung gesetzt — NICHT Abrechnung).
+
+**★ `abgelaufen` (Werthebel):** genehmigt, aber nicht eingegliedert und entweder in Z1
+deaktiviert (`PLANSTATUS=6`/`DEAKTIVIERTDATUM`) **oder** über die Gültigkeit
+(Genehmigung + 6 Monate) hinaus. Praxis-Realität (verifiziert 2026-07-08, eHKP): 509
+eingegliedert, 129 deaktiviert, 239 genehmigt-offen — davon **157 über 6 Monate alt,
+nicht deaktiviert = „still verloren"**. Report liefert `valid_until` (Genehmigung+6M) →
+Praxishub bildet „Tage bis Ablauf" und „genehmigt & nicht terminiert" (Terminierung
+kommt Praxishub-seitig; Z1-Terminmodul `ETSSTERMIN` leer → Doctolib). Report trägt
+Meilenstein-Daten + **Voll-HKP-EEBZ0-XML** (Detail-Drawer; Rendern per KZBV-XSLT =
+„PDF-Ansicht", ein separates HKP-PDF gibt es in Z1 NICHT).
 
 **Noch offen:** Backend-Routen unter `/connector/z1/*` (hkp-status, writeback/pending
 + ack); UI der Toggles; Neupatient-Anlage (NUMBERPOOL + Karten-Match-Test); Build/Test

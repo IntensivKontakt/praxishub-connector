@@ -113,8 +113,15 @@ pub struct PendingWriteback {
 /// Die Cloud upsertet je `plan_key` (letzter Status gewinnt).
 ///
 /// `status` ∈ { `erstellt`, `versendet`, `rueckfrage`, `genehmigt`, `abgelehnt`,
-/// `eingegliedert`, `abgerechnet` }. (`signiert` wird in `erstellt` zusammengefasst;
+/// `abgelaufen`, `eingegliedert`, `abgerechnet` }. (`signiert` → `erstellt`;
 /// der Terminierungs-Status kommt Praxishub-seitig, nicht aus Z1.)
+///
+/// **`abgelaufen`** = genehmigt, aber nicht eingegliedert und entweder in Z1
+/// deaktiviert (`PLANSTATUS=6`/`DEAKTIVIERTDATUM`) **oder** über die Gültigkeit
+/// (Genehmigung + 6 Monate) hinaus → **verlorener Umsatz** / Re-Engagement-Kandidat.
+/// `genehmigt` (noch gültig, nicht eingegliedert) = Terminierungs-Kandidat.
+/// `valid_until` gibt das errechnete Gültigkeitsende — Praxishub kann „Tage bis
+/// Ablauf" und „genehmigt & nicht terminiert" daraus + eigener Terminplanung bilden.
 ///
 /// **Backend-Vertrag offen:** `POST /api/v1/connector/z1/hkp-status`.
 #[derive(Debug, Serialize)]
@@ -141,6 +148,9 @@ pub struct HkpStatusReport {
     pub inserted_on: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub billed_on: Option<String>,
+    /// Errechnetes Gültigkeitsende (Genehmigung + 6 Monate) — für „Tage bis Ablauf".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid_until: Option<String>,
     /// Vollständiges GKV-EEBZ0-XML (Base64) aus `FILEPOOL` — Praxishub rendert es
     /// per KZBV-XSLT als HKP-Ansicht („PDF"). `None`, wenn (noch) nicht vorhanden.
     #[serde(skip_serializing_if = "Option::is_none")]

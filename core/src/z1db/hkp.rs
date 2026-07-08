@@ -7,8 +7,11 @@
 //! plus `ZPLAN`/`ZEHIT` abgeleitet (siehe `docs/Z1-DATABASE.md` §3).
 //!
 //! Status: `erstellt` (inkl. signiert) → `versendet` → `rueckfrage` →
-//! `genehmigt`/`abgelehnt` → `eingegliedert` → `abgerechnet`. Der Terminierungs-
-//! Status kommt Praxishub-seitig (Z1-Terminmodul hier ungenutzt).
+//! `genehmigt`/`abgelehnt` → `eingegliedert` → `abgerechnet`. Sonderfall
+//! **`abgelaufen`**: genehmigt, aber nicht eingegliedert und in Z1 deaktiviert
+//! (`DEAKTIVIERTDATUM`) **oder** über die Gültigkeit (Genehmigung + 6 Monate)
+//! hinaus → verlorener Umsatz / Re-Engagement. Der Terminierungs-Status kommt
+//! Praxishub-seitig (Z1-Terminmodul hier ungenutzt).
 
 use crate::cloud::{CloudClient, HkpStatusReport};
 use crate::config::ConnectorConfig;
@@ -51,15 +54,20 @@ struct PlanFacts {
     decision_zugestellt: String,
     rueckfrage_date: String,
     eingliederung: String,
-    kzveinreich: String,
+    /// `KZVABRDATUM` — echte KZV-Abrechnung (NICHT KZVEINREICHDATUM, das ist die
+    /// Einreichung und schon bei Genehmigung gesetzt).
     kzvabr: String,
+    /// `DEAKTIVIERTDATUM` — Plan in Z1 deaktiviert (abgelaufen/storniert).
+    deaktiviert: String,
 }
 
 /// Leitet den aktuellen Lifecycle-Status ab (reine Funktion — testbar).
 /// Reihenfolge = am weitesten fortgeschrittener Zustand zuerst.
-fn compute_status(f: &PlanFacts) -> &'static str {
+/// `expiry_cutoff` = `JJJJMMTT` von (heute − Gültigkeit); Genehmigungen davor
+/// gelten als abgelaufen.
+fn compute_status(f: &PlanFacts, expiry_cutoff: &str) -> &'static str {
     let set = |s: &str| !s.trim().is_empty();
-    if set(&f.kzvabr) || set(&f.kzveinreich) {
+    if set(&f.kzvabr) {
         return "abgerechnet";
     }
     if set(&f.eingliederung) {
@@ -70,7 +78,16 @@ fn compute_status(f: &PlanFacts) -> &'static str {
     let rf = f.rueckfrage_date.trim();
     if set(dec) && dec >= rf {
         return match f.decision_zugestellt.trim() {
-            "1" => "genehmigt",
+            "1" => {
+                // Genehmigt, aber nicht eingegliedert: in Z1 deaktiviert ODER über
+                // die Gültigkeit hinaus → abgelaufen (verlorener Umsatz).
+                let expired = !expiry_cutoff.is_empty() && dec < expiry_cutoff;
+                if set(&f.deaktiviert) || expired {
+                    "abgelaufen"
+                } else {
+                    "genehmigt"
+                }
+            }
             "0" => "abgelehnt",
             _ => "versendet", // unklare Entscheidung → weiterhin als wartend führen
         };
@@ -82,6 +99,19 @@ fn compute_status(f: &PlanFacts) -> &'static str {
         return "versendet";
     }
     "erstellt" // erstellt/signiert zusammengefasst
+}
+
+/// Gültigkeit einer HKP-Genehmigung in Monaten (ZE-Standard; ggf. je Planart tunen).
+const VALIDITY_MONTHS: u32 = 6;
+
+fn parse_ymd(s: &str) -> Option<chrono::NaiveDate> {
+    chrono::NaiveDate::parse_from_str(s.trim(), "%Y%m%d").ok()
+}
+/// Datum-String + n Monate (JJJJMMTT), oder `None` bei unparsbarem Datum.
+fn add_months_ymd(s: &str, months: u32) -> Option<String> {
+    parse_ymd(s)
+        .and_then(|d| d.checked_add_months(chrono::Months::new(months)))
+        .map(|d| d.format("%Y%m%d").to_string())
 }
 
 /// Persistenter Store: Plan-Schlüssel → zuletzt gemeldeter Status (Change-Detect).
@@ -111,21 +141,17 @@ impl StatusStore {
 }
 
 struct ZplanInfo {
-    antragsnummer: String,
-    planart: String,
-    kzveinreich: String,
     kzvabr: String,
+    deaktiviert: String,
 }
 
 /// Baut die Plan-Fakten aller elektronischen Pläne (mit EBZ-Aktivität) auf.
 async fn collect_plans(conn: &mut Z1Connection) -> Result<HashMap<(String, String), PlanFacts>> {
-    // ZPLAN-Details je Plan.
+    // ZPLAN-Details je Plan (Abrechnung + Deaktivierung).
     let zplan_rows = conn
         .rows(
             "SELECT LTRIM(RTRIM(PATNR)) AS PATNR, LTRIM(RTRIM(LFDPLAN)) AS LFDPLAN, \
-                    LTRIM(RTRIM(ISNULL(ANTRAGSNUMMER,''))) AS ANTRAGSNUMMER, \
-                    ISNULL(PLANART,'') AS PLANART, ISNULL(KZVEINREICHDATUM,'') AS EINREICH, \
-                    ISNULL(KZVABRDATUM,'') AS ABR FROM ZPLAN",
+                    ISNULL(KZVABRDATUM,'') AS ABR, ISNULL(DEAKTIVIERTDATUM,'') AS DEAKT FROM ZPLAN",
             &[],
         )
         .await?;
@@ -134,10 +160,8 @@ async fn collect_plans(conn: &mut Z1Connection) -> Result<HashMap<(String, Strin
         zplan.insert(
             (get_str(r, "PATNR"), get_str(r, "LFDPLAN")),
             ZplanInfo {
-                antragsnummer: get_str(r, "ANTRAGSNUMMER"),
-                planart: get_str(r, "PLANART"),
-                kzveinreich: get_str(r, "EINREICH"),
                 kzvabr: get_str(r, "ABR"),
+                deaktiviert: get_str(r, "DEAKT"),
             },
         );
     }
@@ -209,8 +233,8 @@ async fn collect_plans(conn: &mut Z1Connection) -> Result<HashMap<(String, Strin
     // ZPLAN/ZEHIT-Daten anreichern (nur Pläne mit EBZ-Aktivität bleiben).
     for (key, f) in plans.iter_mut() {
         if let Some(z) = zplan.get(key) {
-            f.kzveinreich = z.kzveinreich.clone();
             f.kzvabr = z.kzvabr.clone();
+            f.deaktiviert = z.deaktiviert.clone();
         }
         if let Some(eg) = eingl.get(key) {
             f.eingliederung = eg.clone();
@@ -269,9 +293,16 @@ async fn poll_once(cfg: &ConnectorConfig, cloud: &CloudClient, store: &mut Statu
     let plans = collect_plans(&mut conn).await?;
     let meta = plan_meta(&mut conn).await?;
 
+    // Gültigkeits-Grenze: Genehmigungen vor (heute − 6 Monate) gelten als abgelaufen.
+    let expiry_cutoff = chrono::Local::now()
+        .date_naive()
+        .checked_sub_months(chrono::Months::new(VALIDITY_MONTHS))
+        .map(|d| d.format("%Y%m%d").to_string())
+        .unwrap_or_default();
+
     let mut reported = 0usize;
     for (key, f) in &plans {
-        let status = compute_status(f);
+        let status = compute_status(f, &expiry_cutoff);
         let plan_key = format!("{}|{}", key.0, key.1);
         if !store.changed(&plan_key, status) {
             continue;
@@ -290,7 +321,8 @@ async fn poll_once(cfg: &ConnectorConfig, cloud: &CloudClient, store: &mut Statu
             query_on: opt(&f.rueckfrage_date),
             decided_on: opt(&f.decision_date),
             inserted_on: opt(&f.eingliederung),
-            billed_on: opt(&f.kzvabr).or_else(|| opt(&f.kzveinreich)),
+            billed_on: opt(&f.kzvabr),
+            valid_until: add_months_ymd(&f.decision_date, VALIDITY_MONTHS),
             ehkp_xml_b64: xml.map(|b| STANDARD.encode(b)),
         };
         match cloud.report_hkp_status(&report).await {
@@ -349,26 +381,56 @@ mod tests {
     fn facts() -> PlanFacts {
         PlanFacts::default()
     }
+    // Gültigkeits-Grenze für die Tests: alles vor 2025-07-01 gilt als abgelaufen.
+    const CUTOFF: &str = "20250701";
 
     #[test]
     fn status_erstellt_bis_abgerechnet() {
         let mut f = facts();
-        assert_eq!(compute_status(&f), "erstellt");
+        assert_eq!(compute_status(&f, CUTOFF), "erstellt");
         f.signatur = "20260101".into(); // signiert → weiterhin "erstellt"
-        assert_eq!(compute_status(&f), "erstellt");
+        assert_eq!(compute_status(&f, CUTOFF), "erstellt");
         f.versand = "20260102".into();
-        assert_eq!(compute_status(&f), "versendet");
+        assert_eq!(compute_status(&f, CUTOFF), "versendet");
         f.rueckfrage_date = "20260103".into();
-        assert_eq!(compute_status(&f), "rueckfrage");
+        assert_eq!(compute_status(&f, CUTOFF), "rueckfrage");
         f.decision_date = "20260104".into();
         f.decision_zugestellt = "1".into();
-        assert_eq!(compute_status(&f), "genehmigt"); // Entscheidung neuer als Rückfrage
+        assert_eq!(compute_status(&f, CUTOFF), "genehmigt"); // genehmigt, noch gültig
         f.decision_zugestellt = "0".into();
-        assert_eq!(compute_status(&f), "abgelehnt");
+        assert_eq!(compute_status(&f, CUTOFF), "abgelehnt");
+        f.decision_zugestellt = "1".into();
         f.eingliederung = "20260201".into();
-        assert_eq!(compute_status(&f), "eingegliedert");
+        assert_eq!(compute_status(&f, CUTOFF), "eingegliedert");
         f.kzvabr = "20260301".into();
-        assert_eq!(compute_status(&f), "abgerechnet");
+        assert_eq!(compute_status(&f, CUTOFF), "abgerechnet");
+    }
+
+    #[test]
+    fn genehmigt_ueber_frist_ist_abgelaufen() {
+        let mut f = facts();
+        f.versand = "20250101".into();
+        f.decision_date = "20250115".into(); // vor CUTOFF → abgelaufen
+        f.decision_zugestellt = "1".into();
+        assert_eq!(compute_status(&f, CUTOFF), "abgelaufen");
+    }
+
+    #[test]
+    fn genehmigt_deaktiviert_ist_abgelaufen() {
+        let mut f = facts();
+        f.decision_date = "20260601".into(); // noch innerhalb Frist …
+        f.decision_zugestellt = "1".into();
+        f.deaktiviert = "20260701".into(); // … aber in Z1 deaktiviert
+        assert_eq!(compute_status(&f, CUTOFF), "abgelaufen");
+    }
+
+    #[test]
+    fn abgelaufen_aber_eingegliedert_zaehlt_als_erledigt() {
+        let mut f = facts();
+        f.decision_date = "20250115".into(); // alt
+        f.decision_zugestellt = "1".into();
+        f.eingliederung = "20250201".into(); // aber behandelt → eingegliedert gewinnt
+        assert_eq!(compute_status(&f, CUTOFF), "eingegliedert");
     }
 
     #[test]
@@ -378,6 +440,6 @@ mod tests {
         f.decision_date = "20260104".into();
         f.decision_zugestellt = "1".into();
         f.rueckfrage_date = "20260110".into(); // neuere Rückfrage → wieder offen
-        assert_eq!(compute_status(&f), "rueckfrage");
+        assert_eq!(compute_status(&f, CUTOFF), "rueckfrage");
     }
 }
