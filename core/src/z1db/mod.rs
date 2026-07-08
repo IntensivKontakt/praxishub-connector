@@ -22,12 +22,14 @@ pub mod bootstrap;
 pub mod client;
 pub mod hkp;
 pub mod lookup;
+pub mod patient_match;
 pub mod writeback;
 
 pub use bootstrap::create_readonly_login;
 pub use client::{connect, Z1Connection};
 pub use hkp::spawn as spawn_hkp_poller;
 pub use lookup::resolve_patient;
+pub use patient_match::spawn as spawn_patient_match;
 pub use writeback::{
     apply_writeback, spawn as spawn_writeback, ContactData, PatientWriteback, WritebackReport,
 };

@@ -4,7 +4,6 @@ use crate::state::AppState;
 use connector_core::cloud::CloudClient;
 use connector_core::config::ConnectorConfig;
 use connector_core::kim::pop3::Pop3Client;
-use connector_core::kim::Watcher;
 use connector_core::status::{Component, Health, StatusSnapshot};
 use connector_core::vdds::ini;
 use tauri::{AppHandle, Manager, State};
@@ -184,17 +183,23 @@ pub(crate) async fn start_watcher(app: &AppHandle) {
         *state.writeback_loop.lock().await = Some(handle);
     }
 
-    // KIM-Watcher: braucht zusätzlich ein konfiguriertes KIM-Postfach.
-    if !cfg.kim_ready() || !cfg.cloud_ready() {
-        state
-            .status
-            .set_kim(Component::new(Health::Warn, "wartet auf Konfiguration"));
-        return;
+    // Eigenständiger Heartbeat (KIM-unabhängig) – hält den Connector in der Cloud „lebendig",
+    // meldet kim_watching=false + hkp_db_watching. Ersetzt den Heartbeat des alten KIM-Watchers.
+    if cfg.cloud_ready() {
+        let handle = connector_core::heartbeat::spawn(cfg.clone(), state.status.clone());
+        *state.heartbeat_loop.lock().await = Some(handle);
     }
-    match Watcher::spawn(cfg, state.status.clone()) {
-        Ok(handle) => *state.watcher.lock().await = Some(handle),
-        Err(e) => state.status.set_kim(Component::new(Health::Err, err(e))),
+
+    // Z1-PATID-Nachmatch: Alt-Patienten ohne PVS-Nummer über die Z1-DB auflösen.
+    if cfg.z1db_read_ready() && cfg.cloud_ready() {
+        let handle = connector_core::z1db::spawn_patient_match(cfg.clone());
+        *state.patient_match_loop.lock().await = Some(handle);
     }
+
+    // KIM/EBZ-Weg ist abgelöst (HKP-Fälle kommen jetzt direkt aus der Z1-DB) – kein KIM-Watcher mehr.
+    state
+        .status
+        .set_kim(Component::new(Health::Unknown, "abgelöst (Z1-DB)"));
 }
 
 pub(crate) async fn stop_watcher(app: &AppHandle) {
@@ -206,6 +211,8 @@ pub(crate) async fn stop_watcher(app: &AppHandle) {
     let doc_watcher = state.doc_watcher.lock().await.take();
     let hkp_poller = state.hkp_poller.lock().await.take();
     let writeback_loop = state.writeback_loop.lock().await.take();
+    let heartbeat_loop = state.heartbeat_loop.lock().await.take();
+    let patient_match_loop = state.patient_match_loop.lock().await.take();
     if let Some(handle) = watcher {
         handle.stop().await;
     }
@@ -216,6 +223,12 @@ pub(crate) async fn stop_watcher(app: &AppHandle) {
         handle.stop().await;
     }
     if let Some(handle) = writeback_loop {
+        handle.stop().await;
+    }
+    if let Some(handle) = heartbeat_loop {
+        handle.stop().await;
+    }
+    if let Some(handle) = patient_match_loop {
         handle.stop().await;
     }
 }

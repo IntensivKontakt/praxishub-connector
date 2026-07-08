@@ -232,8 +232,37 @@ struct Heartbeat<'a> {
     version: &'a str,
     vdds_registered: bool,
     kim_watching: bool,
+    hkp_db_watching: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_error: Option<&'a str>,
+}
+
+/// Ein Cloud-Patient ohne Z1-PATID (aus `GET /connector/z1/patients/unmatched`),
+/// den der Connector gegen die Z1-`PAT`-Tabelle matcht. Felder Z1-normalisiert.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UnmatchedPatient {
+    pub cloud_id: String,
+    #[serde(default)]
+    pub last_name: String,
+    #[serde(default)]
+    pub first_name: String,
+    #[serde(default)]
+    pub birth_name: String,
+    #[serde(default)]
+    pub birth_date: String,   // 'JJJJMMTT'
+    #[serde(default)]
+    pub postal_code: String,
+    #[serde(default)]
+    pub email: String,
+}
+
+/// Ein in Z1 gefundener Treffer, den der Connector zurückmeldet
+/// (`POST /connector/z1/patients/matched`).
+#[derive(Debug, Clone, Serialize)]
+pub struct PatientMatch {
+    pub cloud_id: String,
+    pub patient_id: String,   // gefundene Z1-PATID
+    pub matched_by: String,   // "name_dob" | "name_dob_plz"
 }
 
 impl CloudClient {
@@ -278,12 +307,14 @@ impl CloudClient {
         &self,
         vdds_registered: bool,
         kim_watching: bool,
+        hkp_db_watching: bool,
         last_error: Option<&str>,
     ) -> Result<()> {
         let body = Heartbeat {
             version: env!("CARGO_PKG_VERSION"),
             vdds_registered,
             kim_watching,
+            hkp_db_watching,
             last_error,
         };
         self.auth(self.http.post(self.url("heartbeat")))
@@ -314,6 +345,35 @@ impl CloudClient {
     pub async fn report_hkp_case(&self, report: &HkpCaseReport) -> Result<()> {
         self.auth(self.http.post(self.url("z1/hkp-status")))
             .json(report)
+            .send()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| ConnectorError::Http(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Cloud-Patienten ohne Z1-PATID zum Nachmatchen (seitenweise über `limit`).
+    pub async fn fetch_unmatched_patients(&self, limit: u32) -> Result<Vec<UnmatchedPatient>> {
+        let url = format!("{}?limit={}", self.url("z1/patients/unmatched"), limit);
+        self.auth(self.http.get(url))
+            .send()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| ConnectorError::Http(e.to_string()))?
+            .json::<Vec<UnmatchedPatient>>()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))
+    }
+
+    /// Meldet in Z1 gefundene PATIDs zurück (Bulk). Backend ergänzt nur leere Nummern.
+    pub async fn report_patient_matches(&self, matches: &[PatientMatch]) -> Result<()> {
+        if matches.is_empty() {
+            return Ok(());
+        }
+        self.auth(self.http.post(self.url("z1/patients/matched")))
+            .json(matches)
             .send()
             .await
             .map_err(|e| ConnectorError::Http(e.to_string()))?
