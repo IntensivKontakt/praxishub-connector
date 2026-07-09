@@ -41,8 +41,12 @@ use tracing::{info, warn};
 const CYCLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Tabellen, deren Spalten per Discovery erhoben und mitgeschickt werden.
-const DISCOVERY_TABLES: [&str; 7] =
-    ["BEH", "LBLOCK", "LBLOCKENTRY", "BILL", "FAKT", "KONTO", "CASH"];
+/// (LEB/PERSONAL für die Behandler-Auflösung; GO/PUNKTWERTE für die spätere
+/// berechnete GKV-je-Behandler-Achse.)
+const DISCOVERY_TABLES: [&str; 11] = [
+    "BEH", "LBLOCK", "LBLOCKENTRY", "BILL", "FAKT", "KONTO", "CASH", "LEB", "PERSONAL",
+    "GO", "PUNKTWERTE",
+];
 
 fn get_str(row: &tiberius::Row, col: &str) -> String {
     row.get::<&str, _>(col).unwrap_or("").trim().to_string()
@@ -57,16 +61,14 @@ fn ident(s: &str) -> String {
         .collect()
 }
 
-/// SQL-Ausdruck, der einen Z1-Betrag nach EUR wandelt. **Z1-Betragsformat
-/// (am ZMM verifiziert):** Präfix (Buchstabe oder Leerzeichen) + Ziffern = Betrag
-/// in **Cent**, KEIN Dezimaltrenner — z. B. `"e 6426"` → 6426 Cent → 64,26 €.
-/// Deshalb: Präfix strippen (führendes Nicht-Ziffern-Zeichen), Leerzeichen raus,
+/// SQL-Ausdruck, der einen Z1-Betrag nach EUR wandelt. **Z1-Geldformat (DB-weit,
+/// am ZMM verifiziert):** Währungspräfix `e` (oder Leerzeichen) + Cent-Ganzzahl,
+/// KEIN Dezimaltrenner — `"e 225992"` = 2.259,92 €. `e` + Leerzeichen strippen,
 /// verbleibende Ziffern als `bigint` (= Cent) lesen, `/ 100`. Leer → NULL → 0.
+/// Siehe `docs/Z1-BILLING.md` §1.
 fn sql_amount(expr: &str) -> String {
     format!(
-        "(ISNULL(CAST(NULLIF(REPLACE(\
-             CASE WHEN LEFT(LTRIM({e}),1) LIKE '[0-9]' THEN LTRIM(RTRIM({e})) \
-                  ELSE SUBSTRING(LTRIM({e}),2,LEN({e})) END,' ',''),'') AS bigint), 0) / 100.0)",
+        "(ISNULL(CAST(NULLIF(REPLACE(REPLACE({e},'e',''),' ',''),'') AS bigint), 0) / 100.0)",
         e = expr
     )
 }
@@ -148,6 +150,18 @@ fn map_art(raw: &str) -> String {
         "unbekannt".into()
     } else {
         l
+    }
+}
+
+/// `BEH.GOART` → Abrechnungsart (docs/Z1-BILLING.md §3): `g`=BEMA/GKV, `q`=GOZ,
+/// `2/3/4/7`=Privat-Material/Sonderpositionen. Alles andere unverändert.
+fn map_goart(goart: &str) -> String {
+    match goart.trim().to_lowercase().as_str() {
+        "g" => "bema".into(),
+        "q" => "goz".into(),
+        "2" | "3" | "4" | "7" => "privat".into(),
+        "" => "unbekannt".into(),
+        other => other.into(),
     }
 }
 
@@ -352,41 +366,53 @@ async fn count_beh_since(conn: &mut Z1Connection, m: &ColumnMap, cutoff: &str) -
     Ok(row.and_then(|r| r.get::<i64, _>(0)).unwrap_or(0))
 }
 
-/// Umsatz (Einnahmen) je Monat aus `CASH` — die belastbare Betragsquelle (100 %
-/// befüllt). `BEH` hat KEIN Honorarfeld (DMBETRAG nur GOZ ~33 %), daher kommt der
-/// Umsatz cash-basis aus den Zahlungseingängen. Stornos ausgeschlossen. Ohne
-/// Behandler-/Abrechnungsart-Dimension (kennt CASH nicht) — die per-Behandler-/
-/// BEMA-GOZ-Aufschlüsselung braucht Rechnungsmodellierung (BILL/FAKT, Folgeschritt).
+/// Behandler-Auflösung `BEH.LEBID → LEB.PID → PERSONAL.KUERZEL` (docs/Z1-BILLING.md
+/// §3). Fallback = LEBID, falls kein Name. `LEB.BEZEICHNUNG` ist leer → nicht nutzen.
+const BEHANDLER_JOIN: &str =
+    "LEFT JOIN LEB lb ON LTRIM(RTRIM(lb.LEBID)) = LTRIM(RTRIM(b.[{leb}])) \
+     LEFT JOIN PERSONAL pe ON LTRIM(RTRIM(pe.PID)) = LTRIM(RTRIM(lb.PID))";
+
+/// Honorarumsatz. Zwei koordinierte Quellen, KEIN Doppelzählen (docs/Z1-BILLING.md §4):
+///   1. **Privat/GOZ** (GOART q/2/3/4/7): exakt aus `BEH.DMBETRAG`, je Monat × Behandler
+///      (PERSONAL.KUERZEL) × Art.
+///   2. **GKV/BEMA**: fakturierter Gesamtwert aus `FAKT` (KTRAEGER=1: ZHON Honorar +
+///      ELAB Eigenlabor), je Monat, ohne Behandler (kennt FAKT nicht) — art="bema".
+/// Privat kommt aus BEH, GKV aus FAKT → überschneidungsfrei. Die berechnete GKV-je-
+/// Behandler-Achse (BEH+GO+Punktwert) ist Folgeschritt.
 async fn query_revenue(
     conn: &mut Z1Connection,
     m: &ColumnMap,
     cutoff: &str,
 ) -> Result<Vec<RevenueRow>> {
-    let honorar = as_amount_str(&format!("SUM({})", sql_amount(&format!("[{}]", ident(&m.cash_betrag)))));
-    let sql = format!(
-        "SELECT SUBSTRING(ISNULL([{d}],''),1,6) AS YM, \
+    let mut out: Vec<RevenueRow> = Vec::new();
+
+    // 1) Privat/GOZ aus BEH je Monat × Behandler × GOART.
+    let honorar = as_amount_str(&format!("SUM({})", sql_amount(&format!("b.[{}]", ident(&m.beh_betrag)))));
+    let beh_join = BEHANDLER_JOIN.replace("{leb}", &ident(&m.beh_behandler));
+    let sql_privat = format!(
+        "SELECT SUBSTRING(ISNULL(b.[{d}],''),1,6) AS YM, \
+                LTRIM(RTRIM(ISNULL(b.[{a}],''))) AS ART, \
+                ISNULL(NULLIF(LTRIM(RTRIM(pe.KUERZEL)),''), LTRIM(RTRIM(b.[{leb}]))) AS BEHANDLER, \
                 {honorar} AS HONORAR, \
                 CAST(COUNT(*) AS int) AS N_LEIST, \
-                CAST(COUNT(DISTINCT LTRIM(RTRIM([{p}]))) AS int) AS N_FAELLE \
-         FROM CASH \
-         WHERE ISNULL([{d}],'') >= @P1 \
-           AND LTRIM(RTRIM(ISNULL([{s}],''))) IN ('', '0') \
-         GROUP BY SUBSTRING(ISNULL([{d}],''),1,6)",
-        d = ident(&m.cash_datum),
-        p = ident(&m.beh_patnr), // PATNR existiert in CASH ebenfalls
-        s = ident(&m.cash_storno),
+                CAST(COUNT(DISTINCT LTRIM(RTRIM(b.[{p}]))) AS int) AS N_FAELLE \
+         FROM BEH b {beh_join} \
+         WHERE ISNULL(b.[{d}],'') >= @P1 \
+           AND LTRIM(RTRIM(ISNULL(b.[{a}],''))) NOT IN ('g','') \
+         GROUP BY SUBSTRING(ISNULL(b.[{d}],''),1,6), LTRIM(RTRIM(ISNULL(b.[{a}],''))), \
+                  ISNULL(NULLIF(LTRIM(RTRIM(pe.KUERZEL)),''), LTRIM(RTRIM(b.[{leb}])))",
+        d = ident(&m.beh_datum),
+        a = ident(&m.beh_art),
+        leb = ident(&m.beh_behandler),
+        p = ident(&m.beh_patnr),
     );
-    let rows = conn.rows(&sql, &[&cutoff]).await?;
-    let mut out = Vec::new();
-    for r in &rows {
-        let Some(period) = period_from_ym(&get_str(r, "YM")) else {
-            continue; // Müll-Datum → nicht erfinden, auslassen
-        };
+    for r in &conn.rows(&sql_privat, &[&cutoff]).await? {
+        let Some(period) = period_from_ym(&get_str(r, "YM")) else { continue };
         out.push(RevenueRow {
             period,
-            art: String::new(),      // CASH kennt keine BEMA/GOZ-Art
+            art: map_goart(&get_str(r, "ART")),
             gruppe: None,
-            behandler: String::new(), // CASH kennt keinen Behandler
+            behandler: get_str(r, "BEHANDLER"),
             standort: None,
             honorar: round2(parse_amount(&get_str(r, "HONORAR"))),
             eigenlabor: None,
@@ -395,9 +421,43 @@ async fn query_revenue(
             n_faelle: i64::from(r.get::<i32, _>("N_FAELLE").unwrap_or(0)),
         });
     }
-    out.sort_by(|a, b| {
-        (&a.period, &a.art, &a.behandler).cmp(&(&b.period, &b.art, &b.behandler))
-    });
+
+    // 2) GKV/BEMA aus FAKT (fakturiert) je Monat — Honorar (ZHON) + Eigenlabor (ELAB),
+    //    stornierte raus, nur KTRAEGER=1 (GKV). Kein Behandler in FAKT.
+    let zhon = as_amount_str(&format!("SUM({})", sql_amount("[ZHON]")));
+    let elab = as_amount_str(&format!("SUM({})", sql_amount("[ELAB]")));
+    let flab = as_amount_str(&format!("SUM({})", sql_amount("[FLAB]")));
+    let sql_gkv = format!(
+        "SELECT SUBSTRING(ISNULL([{fd}],''),1,6) AS YM, \
+                {zhon} AS HONORAR, {elab} AS ELAB, {flab} AS FLAB, \
+                CAST(COUNT(*) AS int) AS N_LEIST, \
+                CAST(COUNT(DISTINCT LTRIM(RTRIM([{p}]))) AS int) AS N_FAELLE \
+         FROM FAKT \
+         WHERE ISNULL([{fd}],'') >= @P1 \
+           AND LTRIM(RTRIM(ISNULL([{st}],''))) IN ('', '0') \
+           AND LTRIM(RTRIM(ISNULL([KTRAEGER],''))) = '1' \
+         GROUP BY SUBSTRING(ISNULL([{fd}],''),1,6)",
+        fd = ident(&m.fakt_datum),
+        st = ident(&m.fakt_storno),
+        p = ident(&m.beh_patnr),
+    );
+    for r in &conn.rows(&sql_gkv, &[&cutoff]).await? {
+        let Some(period) = period_from_ym(&get_str(r, "YM")) else { continue };
+        out.push(RevenueRow {
+            period,
+            art: "bema".into(),
+            gruppe: None,
+            behandler: String::new(), // FAKT kennt keinen Behandler
+            standort: None,
+            honorar: round2(parse_amount(&get_str(r, "HONORAR"))),
+            eigenlabor: Some(round2(parse_amount(&get_str(r, "ELAB")))),
+            fremdlabor: Some(round2(parse_amount(&get_str(r, "FLAB")))),
+            n_leistungen: i64::from(r.get::<i32, _>("N_LEIST").unwrap_or(0)),
+            n_faelle: i64::from(r.get::<i32, _>("N_FAELLE").unwrap_or(0)),
+        });
+    }
+
+    out.sort_by(|a, b| (&a.period, &a.art, &a.behandler).cmp(&(&b.period, &b.art, &b.behandler)));
     Ok(out)
 }
 
@@ -549,19 +609,33 @@ async fn sync_once(cfg: &ConnectorConfig, cloud: &CloudClient) -> Result<()> {
     let mut ar_aging: Vec<ArAgingRow> = Vec::new();
     let mut open_services: Vec<OpenServicesRow> = Vec::new();
 
-    // revenue: CASH allein (Einnahmen; BEH hat kein Honorarfeld).
+    // revenue: Privat/GOZ aus BEH (je Behandler×Art) + GKV aus FAKT (je Monat).
     let req: Vec<(&str, &str)> = vec![
-        ("CASH", &map.cash_datum),
-        ("CASH", &map.cash_betrag),
-        ("CASH", &map.cash_storno),
-        ("CASH", &map.beh_patnr), // PATNR ist auch in CASH (Fallzählung)
+        ("BEH", &map.beh_datum),
+        ("BEH", &map.beh_art),
+        ("BEH", &map.beh_behandler),
+        ("BEH", &map.beh_betrag),
+        ("BEH", &map.beh_patnr),
+        ("LEB", "LEBID"),
+        ("LEB", "PID"),
+        ("PERSONAL", "PID"),
+        ("PERSONAL", "KUERZEL"),
+        ("FAKT", &map.fakt_datum),
+        ("FAKT", &map.fakt_storno),
+        ("FAKT", "ZHON"),
+        ("FAKT", "ELAB"),
+        ("FAKT", "FLAB"),
+        ("FAKT", "KTRAEGER"),
     ];
     let missing = disc.missing(&req);
     if missing.is_empty() {
         rows_scanned += count_beh_since(&mut conn, &map, &cutoff).await.unwrap_or(0);
         revenue = query_revenue(&mut conn, &map, &cutoff).await?;
     } else {
-        pending.insert("revenue".into(), pending_entry(missing, &disc, &["CASH"]));
+        pending.insert(
+            "revenue".into(),
+            pending_entry(missing, &disc, &["BEH", "LEB", "PERSONAL", "FAKT"]),
+        );
     }
 
     // payments: CASH allein (KONTO ist der Kontenrahmen, keine Zahlungsquelle).
@@ -954,11 +1028,11 @@ mod tests {
 
     #[test]
     fn sql_amount_und_ident_haertung() {
-        // Cent-Transform: bigint der Ziffern / 100, Präfix + Leerzeichen entfernt.
+        // Cent-Transform: 'e' + Leerzeichen raus, Ziffern als bigint (Cent) / 100.
         let e = sql_amount("[BETRAG]");
         assert!(e.contains("bigint"), "{e}");
         assert!(e.contains("/ 100.0"), "{e}");
-        assert!(e.contains("SUBSTRING"), "{e}");
+        assert!(e.contains("REPLACE") && e.contains("'e'"), "{e}");
         assert_eq!(ident("EINZELBETRAG"), "EINZELBETRAG");
         assert_eq!(ident("X]; DROP TABLE PAT;--"), "XDROPTABLEPAT");
     }
