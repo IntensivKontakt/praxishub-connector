@@ -71,6 +71,18 @@ SELECT ANTRAGSNUMMER FROM ZPLAN WHERE PATNR=@patnr AND LFDPLAN=@lfdplan;
 -- Voll-HKP als offizielles GKV-XML (EEBZ0), + Signatur .p7s, + Antwort EEBZ1:
 SELECT FILENAME, FILEDATA FROM FILEPOOL WHERE FILENAME LIKE 'EEBZ0_' + @antragsnummer + '%.xml';
 ```
+**⚠ ANTRAGSNUMMER tokenisieren:** Das ZPLAN-Feld enthält hinter der eigentlichen Nummer
+mit Leerzeichen eingebettete Zusatzfelder (teils eine zweite Antragsnummer):
+`"0300068382606ZE000001811500401 2210 … 1 1"`. `FILEPOOL.FILENAME` trägt nur das **erste
+Token** — verifiziert 2026-07-09: Voll-String matcht 1/1355 Pläne, erstes Token 1330/1355
+(98 %; Rest hat kein XML). Bei mehreren Dateiversionen (`…01.xml`,`…02.xml` = Nachbesserung)
+per `ORDER BY FILENAME DESC` die höchste nehmen.
+
+**EEBZ0-Inhalt (Namespaces `ant:`/`bas:`/`zer:`):** `zer:Behandlungskosten_insgesamt`
+(z. B. `1445,37` — deutsches Dezimalformat!), `zer:Honorar_BEMA`/`zer:Honorar_GOZ`,
+`zer:Material_und_Laborkosten`, `zer:Leistungsbeschreibung` (je Position, Klartext),
+`bas:Zahnarztnummer`. **Kein Patientenanteil im Antrag** — Festzuschuss-Euros stehen erst
+in der Antwort (EEBZ1) bzw. `ZEHIT.ZE2`-F3. Behandler des Plans: `ZPLAN.LEBID` (§8c).
 Das **`EEBZ0_*.xml`** ist der vollständige HKP: Zahnbefunde je Zahn, Regelversorgung,
 Befunde für Festzuschüsse + Zuschusshöhe, `Leistung_BEMA`/`Leistung_GOZ` +
 `Gebuehrennummer_*` + `Honorar_*`, Material-/Laborkosten, `Behandlungskosten_insgesamt`,
@@ -194,6 +206,137 @@ ist hier leer → aktuell keine GDT/BDT-Schnittstelle lizenziert/konfiguriert).
 | Recall | `HISTRECALL` + PAT-Recallfelder |
 | eGK-/Kartenstatus | `VDESC.EINLESEDATUM`, `PRUEFNACHWEIS` |
 | ePA-Dokumente | `EPADOCUMENT` |
+
+### 8a. Geldbeträge — Speicherformat (verifiziert 2026-07-09 an Live-Z1)
+
+**Beträge sind KEINE Dezimalzahl-Strings.** Format = **Währungspräfix `e` (Euro) + Betrag
+als ganzzahlige Cent, rechtsbündig, ohne Trennzeichen**, z. B. `"e     6426"` = **64,26 €**,
+`"e   225992"` = **2.259,92 €**. (Historisch `d` = D-Mark → daher der Alt-Name `DMBETRAG`.)
+Wenige Zeilen haben statt `e` ein Leerzeichen als Präfix — identisch zu parsen. Naives
+Zahl-Parsen ergibt `null`; **nur die Ziffern ziehen und `/100`**:
+```sql
+CAST(NULLIF(REPLACE(SUBSTRING(<feld>, 2, LEN(<feld>)), ' ', ''), '') AS bigint) / 100.0  -- Euro
+```
+**Stornos sind NICHT negativ** — der Betrag bleibt positiv, `CASH.STORNIERT='1'` markiert die
+Umkehr (negieren/ausschließen, kein Minus im Feld suchen).
+
+Quellen nach Verlässlichkeit:
+- **Zahlungen → `CASH.BETRAG`** (100 % befüllt) + `STORNIERT`, `ZAHLUNGSWEG`, `CASHDATUM`.
+- **Laborkosten → `LBLOCKENTRY.EINZELBETRAG`** (~91 %).
+- **Behandlungshonorar hat `BEH` NICHT als Feld.** `DMBETRAG` ist nur bei Privatleistungen
+  (GOZ) gefüllt (~33 %), bei BEMA leer (**wird berechnet** aus `LSTNR`×`FAKTOR`×`ANZAHL`
+  gegen den Gebührenkatalog `GOART`). Pro-Leistungs-Umsatz kommt aus `BILL`/`FAKT`/`KONTO`.
+- Fixkomma gilt Z1-weit: `ANZAHL` ×100 (`"   100"`=1,00), `FAKTOR` ×10000 (`" 35000"`=3,5).
+
+### 8b. Umsatz-Reporting nach Behandler und BEMA/GOZ (verifiziert 2026-07-09)
+
+**Keine einzelne Tabelle hat Euro + Behandler + Gebührenordnung zusammen.** Es sind zwei
+Achsen aus verschiedenen Quellen:
+
+- **Behandler-Achse → `BEH.LEBID`** (~100 % befüllt). Name/Kürzel über
+  `LEB.LEBID → LEB.PID → PERSONAL.PID` (`PERSONAL.KUERZEL`, Vollname via `PERSONAL.ADRID→ADR`
+  oder `GEMATIKVORNAME/NAME`). `LEB.BEZEICHNUNG` ist leer — **nicht** als Name nutzen.
+  Behandler-Master: `LEB` (18), Personal: `PERSONAL` (41). `LEB.ZANR` = Zahnarztnummer/LANR.
+- **BEMA/GOZ-Achse → `BEH.GOART`**: **`g` = BEMA/GKV**, **`q` = GOZ** (Haupt-Privathonorar),
+  `2/3/4/7` = Material/Sonderpositionen (privat, Euro gespeichert). Leer = Befund/kein Honorar.
+
+**Euro je Segment:**
+- **GOZ + Privat (`q`,`2`,`3`,`4`,`7`) → direkt aus `BEH.DMBETRAG`** (gespeichert), nach
+  `LEBID`×`GOART` summierbar. Keine Berechnung nötig.
+- **BEMA (`g`) → NICHT in BEH gespeichert, aber aus dem Katalog berechenbar.** Der
+  Gebührenkatalog ist **`GO`** (12,3 k Zeilen, keyed auf `LSTNR`/`KYLSTNR`): Spalte
+  **`GEBPKT`** = Bewertungszahl (×100, z. B. `1800`=18,00 Pkt für BEMA „01"), `EINFACHSATZ`
+  = GOZ-Einfachsatz (€), `PWLART` → `PUNKTWERTE`. **`BEH.KYLSTNR = GO.KYLSTNR` matcht zu
+  100 %** (verifiziert). Formel je Zeile:
+  `Euro = GEBPKT/100 × ANZAHL/100 × Punktwert`, Punktwert aus `PUNKTWERTE.PWWEST`
+  (Format `e`+Wert, `/10000`; PWLART `a`≈1,33 €/Pkt konservierend) je `GO.PWLART` +
+  Kasse-Gruppe (`PWGROUP`) + gültig ab `ABDATUM`. **Wichtig:** `GO`-Gültigkeit über
+  `ABDATUM<=Datum AND (BISDATUM IS NULL OR BISDATUM=''/>=Datum)` — `BISDATUM` ist NULL,
+  nicht `''`. `GO.GOART` ≠ `BEH.GOART` (GO nutzt u. a. `g`=zahnärztl., `h`=EBM/GOÄ) —
+  **nicht** danach filtern, über `KYLSTNR` joinen.
+- **Reconciliation-Warnung:** Die reine `GOART='g'`-Berechnung ergibt nur **konservierenden**
+  BEMA-Umsatz. `FAKT.ZHON` (KTRAEGER=1) ist der **gesamte** GKV-Honorartopf (KCH **+** ZE +
+  PAR + KFO + KBR + Zuschläge) und zeitversetzt (Rechnungs- ≠ Behandlungsdatum, Quartale).
+  Beispiel 2026: berechnet 310 k (nur `g`) vs. fakturiert 584 k (alle Sparten). Für
+  „konservierender BEMA nach Behandler" ist die Katalog-Methode korrekt; für den **gesamten**
+  GKV-Honorarumsatz weiter `FAKT` nehmen und per BEMA-Punktanteil auf Behandler aufschlüsseln.
+
+### 8c. GKV-Sparten pro Behandler — Join-Keys + Sammelkonto-Realität (verifiziert 2026-07-09)
+
+`FAKT.ZHON` (KTRAEGER=1) zerlegt sich exakt nach `RART`: `5010`=**KCH** (~398k, kein Labor),
+`5050`=**PAR** (~95k), `5060`/`6020`=**ZE** (~91k, mit Labor). Behandler-Zuordnung je Sparte:
+
+- **KCH** → über `BEH.LEBID` (Katalog-Methode §8b). Nicht plan-basiert.
+- **PAR** → `FAKT.PATNR+LFDPATBILL = PARHIT.PATNR+LFDPATBILL` → `PARHIT`⋈`ZPLAN(PATNR,LFDPLAN)`
+  → `ZPLAN.LEBID`. **`PARHIT.GLFDFAKT` ist leer — nicht als Key benutzen.**
+- **ZE** → `FAKT.PATNR+LFDFAKT = BILL.PATNR+GLFDFAKT` → `BILL.LFDHPLAN = ZPLAN.LFDPLAN`
+  → `ZPLAN.LEBID`. (ZEHIT/PARHIT selbst haben **kein** `LEBID`; der Behandler kommt aus `ZPLAN`.)
+- **`ZPLAN.LEBID`** ist die universelle Behandler-Achse für alle Pläne (ZE/PAR/KBR), 100 % befüllt.
+
+**★ Behandler IMMER fallseitig zuordnen, nicht rechnungsseitig.** Ein großer Teil des
+GKV-ZE/PAR-Honorars wird über **Sammelrechnungen** gebündelt — Pseudo-`PATNR` wie
+**`0kz`/`0kb`** (nicht-numerisch, kein eigener `ZPLAN`). Das heißt **nicht**, dass diese
+Honorare keinem Behandler zuordenbar sind: **jeder gebündelte Fall ist eine `ZEHIT`/`PARHIT`-
+Zeile mit echtem Patienten und über `ZPLAN.LEBID` einem konkreten Behandler** (verifiziert
+143/143 ZE, 194/194 PAR). Nur die *Sammelrechnung selbst* (`FAKT`) lässt sich nicht splitten.
+→ **Für „Umsatz nach Behandler" auf der Fall-/Planebene aggregieren (`ZEHIT`/`PARHIT` →
+`ZPLAN.LEBID`), nicht auf der Rechnungsebene.** `KFOHIT`=0 (Praxis macht kein KFO).
+
+**⚠ ZE-Honorarbetrag NICHT rekonstruieren.** Drei Rechenwege (`(VB+NB)×PWZE`=14k;
+`ZEHITLST⋈GO×PWZE`=556k; `ZEHITLST.LST2`=809k) wichen 2026 alle stark von den fakturierten
+~92k ab — das ZE-Modell (BEMA-ZE + GOZ-Verblendung + Festzuschuss + Faktoren, gemischt je
+Fall) ist nicht verlässlich nachrechenbar. **Autoritativen Betrag verwenden** (`FAKT.ZHON`)
+und über den Fall auf `ZPLAN.LEBID` zuordnen. (Gleiche Lehre wie beim `e`+Cent-Format in
+§8a: gespeicherten/fakturierten Wert lesen, nicht rekonstruieren.)
+
+**★ Sammelrechnung→Fälle-Verkettung (verifiziert, reconciled):**
+1. Sammelkonten = Pseudo-`PATNR` **`0kz`** (ME-ZE), **`0kp`** (ME-PAR), **`0kb`** (ME-KBR),
+   monatliche DTA-Läufe. Periode aus `FAKT.BESCHREIBUNG` = `ME-XX n/MM.JJJJ` (mehrere Läufe
+   je Monat über `RIGHT(BESCHREIBUNG,7)` aggregieren). Achtung: 0kb läuft unter RART 5060,
+   ist aber KBR, nicht ZE.
+2. Monats-Kohorte = Fälle mit `DTADATUM` derselben Periode (`ZEHIT`/`PARHIT`/`KBRHIT`;
+   `DTADATUM<>'00000000'`; `ABRSTATUS='4'`=im DTA abgerechnet).
+3. Monatssumme `FAKT.ZHON` **pro-rata** auf die Kohorte verteilen — Gewicht ZE = **`ZE2`-Feld
+   F4** (s. u.; echte Kassenzahlung je Fall), PAR/KBR = `SUMTOTAL`.
+   **`ZEHIT.ZE2`-Blob-Layout (entschlüsselt):** 80 Zeichen = 5 Geldfelder à 10 (`e`+Cent,
+   §8a-Format) an Pos. **1, 11, 21, 61, 71** + 30 Zeichen Text (Ort) an Pos. 31–60.
+   **F4 (Pos. 61–70) = Gesamt-Kassenzahlung des Falls inkl. Laboranteil** (Monatssummen
+   ≈99 % von `FAKT ZHON+ELAB+FLAB`), F3 (Pos. 21) = Festzuschuss-Brutto. Eine separate
+   Honorar-Komponente je Fall existiert NICHT als Feld → F4 als Verteil-Gewicht nutzen:
+   `TRY_CAST(NULLIF(REPLACE(REPLACE(SUBSTRING(ZE2,61,10),'e',''),' ',''),'') AS bigint)`.
+4. Behandler je Fall = `ZPLAN.LEBID` (100 %), Name via `LEB.PID→PERSONAL.KUERZEL`.
+5. Einzelrechnungen (echte `PATNR`): PAR `FAKT(5050)⋈PARHIT` über `PATNR+LFDPATBILL`;
+   ZE `FAKT⋈BILL(PATNR,GLFDFAKT=LFDFAKT)⋈ZPLAN(LFDPLAN=BILL.LFDHPLAN)`.
+
+Reconciliation 2026: PAR exakt (94 978 €), KBR exakt (28 697 €), ZE-Sammel exakt
+(33 257,32 € mit F4-Gewichten). Ergebnis pro Behandler (PAR+ZE+KBR): lwt 60k, st 49k,
+swt 45k, mm 32k. Pro-rata bleibt eine **Näherung innerhalb des Monats** (die
+Honorar-Komponente je Fall ist nirgends gespeichert), aber mit F4 = echter Kassenzahlung
+je Fall gewichtet; Summen pro Monat/Sparte sind per Konstruktion exakt.
+
+**Rechnungstabellen (Rechnungswahrheit, ohne Behandler-Granularität):**
+- **`FAKT`** (64 k) = Rechnung: `BETRAG` gesamt, `ZHON` (Zahnarzthonorar), `ELAB`/`FLAB`
+  (Eigen-/Fremdlabor) + `…UST`, K-Varianten = Kassenanteil; `KTRAEGER` (`1`=GKV, `z`/`a`=privat),
+  `RART` (Rechnungsart: 5xxx GKV, 7xxx privat), `STORNIERT`, `FAKTDATUM`. Beträge im `e`+Cent-Format.
+- **`BILL`** (97 k) = Abrechnungsfall: `BETRAG`, Behandlungszeitraum (`VONBEHDATUM`/`BISBEHDATUM`),
+  `LFDHPLAN`, Verweise auf die G/P/S-Faktura (`GLFDFAKT`/`PLFDFAKT`/`SLFDFAKT`). Kein `LEBID`/`GOART`.
+- **`CASH.BETRAG`** = tatsächliche Zahlungseingänge (s. 8a).
+
+**Reporting-Empfehlung:** BEH als Leistungs-/Behandler-Achse (GOZ-Euro direkt, BEMA top-down
+aus FAKT), Summen gegen `FAKT` (fakturiert) und `CASH` (bezahlt) plausibilisieren. Erprobte
+Aggregation:
+```sql
+SELECT p.KUERZEL, b.GOART, COUNT(*) AS leistungen,
+       SUM(CAST(NULLIF(REPLACE(REPLACE(b.DMBETRAG,'e',''),' ',''),'') AS bigint))/100.0 AS goz_euro
+FROM BEH b
+LEFT JOIN LEB l      ON LTRIM(RTRIM(l.LEBID)) = LTRIM(RTRIM(b.LEBID))
+LEFT JOIN PERSONAL p ON LTRIM(RTRIM(p.PID))   = LTRIM(RTRIM(l.PID))
+WHERE b.DATUM >= '20260101' AND LTRIM(RTRIM(b.GOART)) <> ''
+GROUP BY p.KUERZEL, b.GOART;   -- g-Zeilen: goz_euro = NULL (BEMA, s. o.)
+```
+> Die genaue Legende der Privat-GOART-Codes (`q`/`2`/`3`/`4`/`7`) ist aus Füllmuster +
+> Größenordnung abgeleitet; `g`=BEMA vs. Rest=privat ist sicher. Exakte Code-Bedeutung bei
+> Bedarf einmal an einem bekannten Fall gegenprüfen.
 
 ## Connector-Anbindung (Code)
 

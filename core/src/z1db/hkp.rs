@@ -117,6 +117,84 @@ struct PlanRow {
     antragsnummer: String,
     kzvabr: String,
     deaktiviert: String,
+    /// Behandler des Plans (`ZPLAN.LEBID` → `LEB.PID` → `PERSONAL`).
+    lebid: String,
+}
+
+/// Behandler-Stammdaten (`LEB` ⋈ `PERSONAL`): Kürzel + Anzeigename.
+#[derive(Debug, Clone, Default)]
+struct Behandler {
+    kuerzel: String,
+    name: String,
+}
+
+/// `ANTRAGSNUMMER` enthält hinter der eigentlichen Nummer weitere, mit
+/// Leerzeichen eingebettete Felder (z. B. `"…0801 2210   … 1 1"`, teils sogar
+/// eine zweite Antragsnummer). `FILEPOOL.FILENAME` trägt nur das erste Token
+/// (`EEBZ0_<nummer><version>.xml`) — verifiziert am Live-Z1: Voll-String matcht
+/// 1/1355, erstes Token 1330/1355.
+fn antrag_token(antragsnummer: &str) -> &str {
+    antragsnummer.split_whitespace().next().unwrap_or("")
+}
+
+/// Alle Textwerte eines XML-Tags (naive Extraktion, reicht fürs EEBZ0-Schema —
+/// die Werte selbst enthalten kein Markup). Namespace-Präfix gehört zum Tag.
+fn xml_values(xml: &str, tag: &str) -> Vec<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(i) = rest.find(&open) {
+        rest = &rest[i + open.len()..];
+        let Some(j) = rest.find(&close) else { break };
+        let v = rest[..j].trim();
+        if !v.is_empty() {
+            out.push(v.to_string());
+        }
+        rest = &rest[j + close.len()..];
+    }
+    out
+}
+
+/// Deutscher Dezimalbetrag (`"1445,37"`) → f64.
+fn parse_de_amount(s: &str) -> Option<f64> {
+    s.trim().replace('.', "").replace(',', ".").parse().ok()
+}
+
+/// Aus dem EEBZ0-XML extrahierte Fall-Daten fürs Tracking.
+#[derive(Debug, Default, Clone)]
+struct XmlFacts {
+    /// `zer:Behandlungskosten_insgesamt` (Euro).
+    betrag_gesamt: Option<f64>,
+    /// Kompakte Leistungsbeschreibung (dedupliziert, `"; "`-verbunden, gekappt).
+    leistung: Option<String>,
+}
+
+/// Extrahiert Gesamtbetrag + Leistungsbeschreibung aus dem EEBZ0-XML.
+/// Ein Patientenanteil steht NICHT im Antrag (EEBZ0 trägt nur Befundnummern,
+/// keine Festzuschuss-Euros) — der bleibt bewusst leer.
+fn extract_xml_facts(xml_bytes: &[u8]) -> XmlFacts {
+    let xml = String::from_utf8_lossy(xml_bytes);
+    let betrag_gesamt = xml_values(&xml, "zer:Behandlungskosten_insgesamt")
+        .first()
+        .and_then(|s| parse_de_amount(s));
+    let mut seen = std::collections::HashSet::new();
+    let mut parts: Vec<String> = Vec::new();
+    for l in xml_values(&xml, "zer:Leistungsbeschreibung") {
+        if seen.insert(l.clone()) {
+            parts.push(l);
+        }
+    }
+    let mut leistung = parts.join("; ");
+    if leistung.len() > 300 {
+        let mut cut = 297;
+        while !leistung.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        leistung.truncate(cut);
+        leistung.push('…');
+    }
+    XmlFacts { betrag_gesamt, leistung: opt(&leistung) }
 }
 
 /// Persistenter Store: Fall-Schlüssel → zuletzt gemeldeter Status (Change-Detect).
@@ -153,21 +231,24 @@ impl StatusStore {
 
 type PlanKey = (String, String); // (PATNR, LFDPLAN)
 
-/// Lädt alle Pläne (ZPLAN), EBZ-Fakten je Plan, EBZ-Verlauf je Plan und Eingliederung.
+/// Lädt alle Pläne (ZPLAN), EBZ-Fakten je Plan, EBZ-Verlauf je Plan, Eingliederung
+/// und die Behandler-Stammdaten (`LEBID` → Kürzel/Name).
 async fn load_all(
     conn: &mut Z1Connection,
 ) -> Result<(
     HashMap<PlanKey, PlanRow>,
     HashMap<PlanKey, PlanFacts>,
     HashMap<PlanKey, Vec<HkpSubmission>>,
+    HashMap<String, Behandler>,
 )> {
-    // ZPLAN (alle Pläne).
+    // ZPLAN (alle Pläne). LEBID = Behandler des Plans (100 % befüllt, §8c).
     let zrows = conn
         .rows(
             "SELECT LTRIM(RTRIM(PATNR)) AS PATNR, LTRIM(RTRIM(LFDPLAN)) AS LFDPLAN, \
                     LTRIM(RTRIM(ISNULL(LFDBEFUND,''))) AS LFDBEFUND, ISNULL(PLANART,'') AS PLANART, \
                     ISNULL(PLANUNGSDATUM,'') AS PLNG, LTRIM(RTRIM(ISNULL(ANTRAGSNUMMER,''))) AS ANTRAG, \
-                    ISNULL(KZVABRDATUM,'') AS ABR, ISNULL(DEAKTIVIERTDATUM,'') AS DEAKT FROM ZPLAN",
+                    ISNULL(KZVABRDATUM,'') AS ABR, ISNULL(DEAKTIVIERTDATUM,'') AS DEAKT, \
+                    LTRIM(RTRIM(ISNULL(LEBID,''))) AS LEBID FROM ZPLAN",
             &[],
         )
         .await?;
@@ -182,7 +263,28 @@ async fn load_all(
                 antragsnummer: get_str(r, "ANTRAG"),
                 kzvabr: get_str(r, "ABR"),
                 deaktiviert: get_str(r, "DEAKT"),
+                lebid: get_str(r, "LEBID"),
             },
+        );
+    }
+
+    // Behandler-Stammdaten: LEBID → Kürzel + Anzeigename (LEB ⋈ PERSONAL).
+    // `LEB.BEZEICHNUNG` ist in der Praxis leer — der Name kommt aus PERSONAL.
+    let brows = conn
+        .rows(
+            "SELECT LTRIM(RTRIM(l.LEBID)) AS LEBID, LTRIM(RTRIM(ISNULL(p.KUERZEL,''))) AS KRZ, \
+                    LTRIM(RTRIM(ISNULL(p.GEMATIKVORNAME,''))) AS VN, \
+                    LTRIM(RTRIM(ISNULL(p.GEMATIKNAME,''))) AS NN \
+             FROM LEB l LEFT JOIN PERSONAL p ON LTRIM(RTRIM(p.PID))=LTRIM(RTRIM(l.PID))",
+            &[],
+        )
+        .await?;
+    let mut behandler: HashMap<String, Behandler> = HashMap::new();
+    for r in &brows {
+        let name = format!("{} {}", get_str(r, "VN"), get_str(r, "NN")).trim().to_string();
+        behandler.insert(
+            get_str(r, "LEBID"),
+            Behandler { kuerzel: get_str(r, "KRZ"), name },
         );
     }
 
@@ -286,18 +388,25 @@ async fn load_all(
     for list in subs.values_mut() {
         list.sort_by(|a, b| a.date.cmp(&b.date));
     }
-    Ok((plans, facts, subs))
+    Ok((plans, facts, subs, behandler))
 }
 
 /// Holt den Voll-HKP (EEBZ0-XML) aus `FILEPOOL` anhand der Antragsnummer.
+///
+/// Die `ZPLAN.ANTRAGSNUMMER` wird aufs **erste Token** gekürzt (siehe
+/// [`antrag_token`]) — der Voll-String enthält eingebettete Zusatzfelder und
+/// matcht die `FILEPOOL`-Dateinamen praktisch nie. Bei mehreren Versionen
+/// (`…01.xml`, `…02.xml` = Nachbesserungen) gewinnt die höchste.
 async fn fetch_hkp_xml(conn: &mut Z1Connection, antragsnummer: &str) -> Result<Option<Vec<u8>>> {
-    if antragsnummer.is_empty() {
+    let token = antrag_token(antragsnummer);
+    if token.is_empty() {
         return Ok(None);
     }
-    let pattern = format!("EEBZ0_{antragsnummer}%.xml");
+    let pattern = format!("EEBZ0_{token}%.xml");
     let row = conn
         .one_row(
-            "SELECT TOP 1 CAST(FILEDATA AS varbinary(max)) AS DATA FROM FILEPOOL WHERE FILENAME LIKE @P1",
+            "SELECT TOP 1 CAST(FILEDATA AS varbinary(max)) AS DATA FROM FILEPOOL \
+             WHERE FILENAME LIKE @P1 ORDER BY FILENAME DESC",
             &[&pattern],
         )
         .await?;
@@ -340,7 +449,7 @@ async fn poll_once(cfg: &ConnectorConfig, cloud: &CloudClient, store: &mut Statu
     )
     .await?;
 
-    let (plans, facts, subs) = load_all(&mut conn).await?;
+    let (plans, facts, subs, behandler) = load_all(&mut conn).await?;
 
     let today = chrono::Local::now().date_naive();
     let expiry_cutoff = today
@@ -402,8 +511,11 @@ async fn poll_once(cfg: &ConnectorConfig, cloud: &CloudClient, store: &mut Statu
         // Fingerprint statt nur Status-Label → erkennt auch neue Rückfragen/
         // Antworten oder zusätzliche Pläne (AAV) im Fall, damit das Drawer im
         // Cloud nicht veraltet, obwohl das Status-Label gleich bleibt.
+        // `v2`: Payload um Behandler/Betrag/Leistung + XML-Fix erweitert — die
+        // Versionierung erzwingt nach dem Update eine EINMALIGE Neumeldung aller
+        // Fälle (Backfill der neuen Felder), danach greift wieder Change-Detect.
         let fingerprint = format!(
-            "{status}|{}|{}|{}|{}|{}|{}",
+            "v2|{status}|{}|{}|{}|{}|{}|{}",
             pfacts.versand,
             pfacts.rueckfrage_date,
             pfacts.decision_date,
@@ -417,6 +529,14 @@ async fn poll_once(cfg: &ConnectorConfig, cloud: &CloudClient, store: &mut Statu
 
         let prow = &plans[&primary];
         let xml = fetch_hkp_xml(&mut conn, &prow.antragsnummer).await.unwrap_or(None);
+        // Betrag + echte Leistungsbeschreibung aus dem EEBZ0-XML.
+        let xml_facts = xml.as_deref().map(extract_xml_facts).unwrap_or_default();
+        // Behandler des führenden Plans (ZPLAN.LEBID → PERSONAL).
+        let beh = behandler.get(&prow.lebid);
+        let behandler_kuerzel = beh.and_then(|b| opt(&b.kuerzel));
+        let behandler_name = beh
+            .and_then(|b| opt(&b.name))
+            .or_else(|| behandler_kuerzel.clone());
 
         // Alle Pläne des Falls fürs Drawer.
         let mut entries: Vec<HkpPlanEntry> = members
@@ -458,6 +578,13 @@ async fn poll_once(cfg: &ConnectorConfig, cloud: &CloudClient, store: &mut Statu
             inserted_on: opt(&pfacts.eingliederung),
             billed_on: opt(&pfacts.kzvabr),
             valid_until: add_months_ymd(&pfacts.decision_date, VALIDITY_MONTHS),
+            behandler: behandler_name,
+            behandler_kuerzel,
+            betrag_gesamt: xml_facts.betrag_gesamt,
+            // Der Antrag (EEBZ0) enthält keine Festzuschuss-Euros — Patientenanteil
+            // kann erst backend-seitig (aus der EEBZ1-Antwort) berechnet werden.
+            betrag_patientenanteil: None,
+            leistung: xml_facts.leistung,
             ehkp_xml_b64: xml.map(|b| STANDARD.encode(b)),
             plans: entries,
         };
@@ -570,5 +697,56 @@ mod tests {
         assert_eq!(variant_of("3"), "GAV");
         assert_eq!(variant_of("a"), "AAV");
         assert_eq!(variant_of("4"), "GAV");
+    }
+
+    #[test]
+    fn antragsnummer_wird_tokenisiert() {
+        // Reale ZPLAN-Werte: hinter der Nummer eingebettete Zusatzfelder,
+        // teils eine zweite Antragsnummer (verifiziert am Live-Z1).
+        assert_eq!(
+            antrag_token("0300068382606ZE000001811500401 2210                                          1 1"),
+            "0300068382606ZE000001811500401"
+        );
+        assert_eq!(
+            antrag_token("0300068382604ZE000001807000201 6210     0300068382604ZE000001807000203  210  1 1"),
+            "0300068382604ZE000001807000201"
+        );
+        assert_eq!(antrag_token("EINFACH123"), "EINFACH123");
+        assert_eq!(antrag_token(""), "");
+        assert_eq!(antrag_token("   "), "");
+    }
+
+    #[test]
+    fn xml_fakten_werden_extrahiert() {
+        let xml = "<Antrag><zer:Kostenplanung>\
+            <zer:Leistung_GOZ><zer:Leistungsbeschreibung>Vollkrone, Hohlkehl- oder Stufenpräparation</zer:Leistungsbeschreibung></zer:Leistung_GOZ>\
+            <zer:Leistung_GOZ><zer:Leistungsbeschreibung>Adhäsive Befestigung</zer:Leistungsbeschreibung></zer:Leistung_GOZ>\
+            <zer:Leistung_GOZ><zer:Leistungsbeschreibung>Adhäsive Befestigung</zer:Leistungsbeschreibung></zer:Leistung_GOZ>\
+            <zer:Honorar_BEMA>21,48</zer:Honorar_BEMA>\
+            <zer:Behandlungskosten_insgesamt>1445,37</zer:Behandlungskosten_insgesamt>\
+        </zer:Kostenplanung></Antrag>"
+            .as_bytes();
+        let f = extract_xml_facts(xml);
+        assert_eq!(f.betrag_gesamt, Some(1445.37));
+        // dedupliziert: die doppelte Adhäsive Befestigung nur einmal
+        let l = f.leistung.unwrap();
+        assert_eq!(l.matches("Befestigung").count(), 1);
+        assert!(l.starts_with("Vollkrone"));
+    }
+
+    #[test]
+    fn deutscher_betrag_wird_geparst() {
+        assert_eq!(parse_de_amount("1445,37"), Some(1445.37));
+        assert_eq!(parse_de_amount("1.445,37"), Some(1445.37)); // Tausenderpunkt
+        assert_eq!(parse_de_amount("700,00"), Some(700.0));
+        assert_eq!(parse_de_amount(""), None);
+        assert_eq!(parse_de_amount("abc"), None);
+    }
+
+    #[test]
+    fn xml_values_findet_alle_und_nur_gefuellte() {
+        let xml = "<a><t>eins</t><t></t><t> zwei </t></a>";
+        assert_eq!(xml_values(xml, "t"), vec!["eins".to_string(), "zwei".to_string()]);
+        assert!(xml_values(xml, "fehlt").is_empty());
     }
 }

@@ -150,6 +150,25 @@ pub struct HkpCaseReport {
     /// Gültigkeitsende (Genehmigung + 6 Monate) des führenden Plans.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valid_until: Option<String>,
+    /// Behandler-Anzeigename des führenden Plans (`ZPLAN.LEBID` → `PERSONAL`,
+    /// Gematik-Vor-/Nachname; Fallback: Kürzel).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub behandler: Option<String>,
+    /// Behandler-Kürzel (`PERSONAL.KUERZEL`, z. B. `"st"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub behandler_kuerzel: Option<String>,
+    /// Gesamtbetrag des Plans in Euro (`zer:Behandlungskosten_insgesamt` aus dem
+    /// EEBZ0-XML) — nur gesetzt, wenn das XML vorliegt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub betrag_gesamt: Option<f64>,
+    /// Patientenanteil in Euro. Steht NICHT im Antrag (EEBZ0) — bleibt vorerst
+    /// leer; berechenbar erst aus der Kassen-Antwort (EEBZ1, Festzuschüsse).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub betrag_patientenanteil: Option<f64>,
+    /// Echte Leistungsbeschreibung (dedupliziert aus `zer:Leistungsbeschreibung`,
+    /// `"; "`-verbunden, gekappt) — ersetzt das bisherige Planart-Label im Backend.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leistung: Option<String>,
     /// Voll-HKP-EEBZ0-XML (Base64) des führenden Plans — Rendern per KZBV-XSLT.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ehkp_xml_b64: Option<String>,
