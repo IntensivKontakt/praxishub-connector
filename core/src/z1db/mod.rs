@@ -31,6 +31,7 @@ pub mod writeback;
 pub use bootstrap::create_readonly_login;
 pub use client::{connect, Z1Connection};
 pub use control::spawn as spawn_control_sync;
+pub use control::clear_last_run as clear_control_last_run;
 pub use hkp::spawn as spawn_hkp_poller;
 pub use lookup::resolve_patient;
 pub use patient_match::spawn as spawn_patient_match;

@@ -152,8 +152,11 @@ pub struct ColumnMap {
     pub beh_patnr: String,
     /// Leistungsdatum (`JJJJMMTT`).
     pub beh_datum: String,
-    /// Leistungsart (BEMA/GOZ/privat …).
+    /// Leistungsart (BEMA/GOZ/privat …). ZMM-real: `GOART`.
     pub beh_art: String,
+    /// Honorar-Betrag je erbrachter Leistung (ZMM-real: `DMBETRAG`, trotz Alt-Name
+    /// der Euro-Betrag). Umsatz = Summe hierüber; kein Join zu LBLOCKENTRY nötig.
+    pub beh_betrag: String,
     /// Leistungsziffer (derzeit nicht in den Aggregaten benutzt; Reserve für
     /// die spätere `gruppe`-Ableitung).
     pub beh_ziffer: String,
@@ -166,22 +169,25 @@ pub struct ColumnMap {
     // LBLOCKENTRY (Einzelbeträge je Block)
     pub lblockentry_block: String,
     pub lblockentry_betrag: String,
-    // KONTO (Zahlungseingänge, rechnungsbezogen)
+    // KONTO = Kontenrahmen (KEINE Zahlungen) → Felder ungenutzt, nur Rückwärtskompat.
     pub konto_datum: String,
     pub konto_betrag: String,
     pub konto_zahlart: String,
-    /// Rechnungs-Verknüpfung (→ `FAKT`), für `ar_aging` (FAKT − KONTO).
     pub konto_rechnr: String,
-    // CASH (Barzahlungen/Kasse)
+    // CASH (Zahlungstransaktionen — die echte Zahlungsquelle)
     pub cash_datum: String,
     pub cash_betrag: String,
     pub cash_zahlart: String,
-    // FAKT (Rechnungen)
+    /// Storno-Kennzeichen; gesetzt = stornierte Zahlung (ausgeschlossen).
+    pub cash_storno: String,
+    // FAKT (Rechnungen — offene Forderungen)
     pub fakt_rechnr: String,
     pub fakt_datum: String,
     pub fakt_betrag: String,
-    /// Offen-Kennzeichen (Reserve; `ar_aging` rechnet FAKT − KONTO).
+    /// Beglichen-Kennzeichen; leer = offen, gesetzt (Datum/Flag) = bezahlt.
     pub fakt_offen: String,
+    /// Storno-Kennzeichen der Rechnung (ausgeschlossen).
+    pub fakt_storno: String,
     // BILL (Abrechnungen)
     pub bill_key: String,
 }
@@ -189,27 +195,32 @@ pub struct ColumnMap {
 impl Default for ColumnMap {
     fn default() -> Self {
         Self {
-            beh_patnr: "PATNR".into(), // belegt (§2)
+            // Defaults = am ZMM-Piloten (09.07.2026) per Schema-Discovery verifizierte
+            // echte Z1-Spalten. Andere Z1-Installationen ggf. via z1_control_column_map.
+            beh_patnr: "PATNR".into(),
             beh_datum: "DATUM".into(),
-            beh_art: "LEISTUNGSART".into(),
-            beh_ziffer: "LEISTUNG".into(),
-            beh_behandler: "BEHANDLER".into(),
-            beh_block: "LFDLBLOCK".into(),
-            beh_bill: "LFDBILL".into(),
+            beh_art: "GOART".into(),
+            beh_betrag: "DMBETRAG".into(),
+            beh_ziffer: "LSTNR".into(),
+            beh_behandler: "LEBID".into(),
+            beh_block: "LFDLBLOCK".into(),   // (Reserve; Umsatz braucht keinen Join mehr)
+            beh_bill: "LFDPATBILL".into(),   // leer = noch nicht abgerechnet (liegengeblieben)
             lblockentry_block: "LFDLBLOCK".into(),
             lblockentry_betrag: "EINZELBETRAG".into(),
-            konto_datum: "DATUM".into(),
-            konto_betrag: "BETRAG".into(),
-            konto_zahlart: "ZAHLART".into(),
-            konto_rechnr: "RECHNR".into(),
-            cash_datum: "DATUM".into(),
+            konto_datum: "".into(),          // KONTO = Kontenrahmen, NICHT Zahlungen → ungenutzt
+            konto_betrag: "".into(),
+            konto_zahlart: "".into(),
+            konto_rechnr: "".into(),
+            cash_datum: "CASHDATUM".into(),
             cash_betrag: "BETRAG".into(),
-            cash_zahlart: "ZAHLART".into(),
-            fakt_rechnr: "RECHNR".into(),
-            fakt_datum: "RECHNUNGSDATUM".into(),
+            cash_zahlart: "ZAHLUNGSWEG".into(),
+            cash_storno: "STORNIERT".into(),
+            fakt_rechnr: "LFDFAKT".into(),
+            fakt_datum: "FAKTDATUM".into(),
             fakt_betrag: "BETRAG".into(),
-            fakt_offen: "OFFEN".into(),
-            bill_key: "LFDBILL".into(),
+            fakt_offen: "BEGLICHEN".into(),  // leer = offen; gesetzt (Datum/Flag) = beglichen
+            fakt_storno: "STORNIERT".into(),
+            bill_key: "LFDPATBILL".into(),
         }
     }
 }
@@ -334,7 +345,10 @@ async fn query_revenue(
     m: &ColumnMap,
     cutoff: &str,
 ) -> Result<Vec<RevenueRow>> {
-    let amt = sql_amount(&format!("e.[{}]", ident(&m.lblockentry_betrag)));
+    // Umsatz aus BEH ALLEIN (erbrachte Leistungen mit eigenem Betrag DMBETRAG) —
+    // KEIN Join zu LBLOCKENTRY mehr (der frühere LFDLBLOCK-Join war ein Kreuzprodukt
+    // über 1,46 Mio. Zeilen → Timeout). Gruppierung je Monat × Art × Behandler.
+    let amt = sql_amount(&format!("b.[{}]", ident(&m.beh_betrag)));
     let sql = format!(
         "SELECT SUBSTRING(ISNULL(b.[{d}],''),1,6) AS YM, \
                 LTRIM(RTRIM(ISNULL(b.[{a}],''))) AS ART, \
@@ -343,7 +357,6 @@ async fn query_revenue(
                 CAST(COUNT(*) AS int) AS N_LEIST, \
                 CAST(COUNT(DISTINCT LTRIM(RTRIM(b.[{p}]))) AS int) AS N_FAELLE \
          FROM BEH b \
-         JOIN LBLOCKENTRY e ON LTRIM(RTRIM(e.[{eb}])) = LTRIM(RTRIM(b.[{bb}])) \
          WHERE ISNULL(b.[{d}],'') >= @P1 \
          GROUP BY SUBSTRING(ISNULL(b.[{d}],''),1,6), \
                   LTRIM(RTRIM(ISNULL(b.[{a}],''))), \
@@ -352,8 +365,6 @@ async fn query_revenue(
         a = ident(&m.beh_art),
         beh = ident(&m.beh_behandler),
         p = ident(&m.beh_patnr),
-        eb = ident(&m.lblockentry_block),
-        bb = ident(&m.beh_block),
     );
     let rows = conn.rows(&sql, &[&cutoff]).await?;
     let mut out = Vec::new();
@@ -381,24 +392,25 @@ async fn query_revenue(
 }
 
 /// Zahlungseingänge je Monat × Zahlart aus einer Quelle (`KONTO` oder `CASH`).
-async fn query_payments_source(
+/// Zahlungseingänge aus CASH: je Monat × Zahlungsweg, stornierte ausgeschlossen.
+async fn query_payments_cash(
     conn: &mut Z1Connection,
-    table: &str,
-    datum: &str,
-    betrag: &str,
-    zahlart: &str,
+    m: &ColumnMap,
     cutoff: &str,
     acc: &mut BTreeMap<(String, String), (f64, i64)>,
 ) -> Result<()> {
-    let amt = sql_amount(&format!("[{}]", ident(betrag)));
+    let amt = sql_amount(&format!("[{}]", ident(&m.cash_betrag)));
     let sql = format!(
         "SELECT SUBSTRING(ISNULL([{d}],''),1,6) AS YM, \
                 LTRIM(RTRIM(ISNULL([{z}],''))) AS ART, \
                 SUM({amt}) AS SUMME, CAST(COUNT(*) AS int) AS N \
-         FROM {table} WHERE ISNULL([{d}],'') >= @P1 \
+         FROM CASH \
+         WHERE ISNULL([{d}],'') >= @P1 \
+           AND LTRIM(RTRIM(ISNULL([{s}],''))) IN ('', '0') \
          GROUP BY SUBSTRING(ISNULL([{d}],''),1,6), LTRIM(RTRIM(ISNULL([{z}],'')))",
-        d = ident(datum),
-        z = ident(zahlart),
+        d = ident(&m.cash_datum),
+        z = ident(&m.cash_zahlart),
+        s = ident(&m.cash_storno),
     );
     let rows = conn.rows(&sql, &[&cutoff]).await?;
     for r in &rows {
@@ -413,7 +425,10 @@ async fn query_payments_source(
     Ok(())
 }
 
-/// Offene Forderungen (FAKT − KONTO) je Rechnung; Bucket-Zuordnung in Rust.
+/// Offene Forderungen aus FAKT ALLEIN: Rechnungen, die weder beglichen noch
+/// storniert sind (KONTO ist der Kontenrahmen, keine Zahlungsquelle → nicht mehr
+/// dagegen gerechnet). Je offene Rechnung eine Zeile mit Betrag + Datum, Bucket-
+/// Zuordnung in Rust.
 async fn query_ar_aging(
     conn: &mut Z1Connection,
     m: &ColumnMap,
@@ -421,17 +436,15 @@ async fn query_ar_aging(
     today: chrono::NaiveDate,
 ) -> Result<Vec<ArAgingRow>> {
     let amt_f = sql_amount(&format!("[{}]", ident(&m.fakt_betrag)));
-    let amt_k = sql_amount(&format!("[{}]", ident(&m.konto_betrag)));
     let sql = format!(
-        "SELECT f.DAT AS DAT, f.SUMME - ISNULL(k.SUMME, 0) AS OFFEN \
-         FROM (SELECT LTRIM(RTRIM([{fr}])) AS RNR, MAX(ISNULL([{fd}],'')) AS DAT, \
-                      SUM({amt_f}) AS SUMME FROM FAKT GROUP BY LTRIM(RTRIM([{fr}]))) f \
-         LEFT JOIN (SELECT LTRIM(RTRIM([{kr}])) AS RNR, SUM({amt_k}) AS SUMME \
-                    FROM KONTO GROUP BY LTRIM(RTRIM([{kr}]))) k ON k.RNR = f.RNR \
-         WHERE f.SUMME - ISNULL(k.SUMME, 0) > 0.005",
-        fr = ident(&m.fakt_rechnr),
+        "SELECT ISNULL([{fd}],'') AS DAT, {amt_f} AS OFFEN \
+         FROM FAKT \
+         WHERE LTRIM(RTRIM(ISNULL([{offen}],''))) = '' \
+           AND LTRIM(RTRIM(ISNULL([{storno}],''))) IN ('', '0') \
+           AND {amt_f} > 0.005",
         fd = ident(&m.fakt_datum),
-        kr = ident(&m.konto_rechnr),
+        offen = ident(&m.fakt_offen),
+        storno = ident(&m.fakt_storno),
     );
     let rows = conn.rows(&sql, &[]).await?;
     let mut agg: BTreeMap<&'static str, (f64, i64)> = BTreeMap::new();
@@ -463,24 +476,21 @@ async fn query_open_services(
     cutoff: &str,
     snapshot_date: &str,
 ) -> Result<Vec<OpenServicesRow>> {
-    let amt = sql_amount(&format!("e.[{}]", ident(&m.lblockentry_betrag)));
+    // Liegengeblieben = erbrachte BEH-Leistung ohne Abrechnungsbezug (LFDPATBILL leer/0),
+    // Betrag aus BEH.DMBETRAG. Kein Join, kein BILL-Subquery — der leere Abrechnungs-
+    // Verweis IST das „nicht abgerechnet"-Signal.
+    let amt = sql_amount(&format!("b.[{}]", ident(&m.beh_betrag)));
     let sql = format!(
         "SELECT LTRIM(RTRIM(ISNULL(b.[{beh}],''))) AS BEHANDLER, \
                 SUM({amt}) AS OFFEN, CAST(COUNT(*) AS int) AS N, \
                 MIN(NULLIF(LTRIM(RTRIM(ISNULL(b.[{d}],''))),'')) AS OLDEST \
          FROM BEH b \
-         JOIN LBLOCKENTRY e ON LTRIM(RTRIM(e.[{eb}])) = LTRIM(RTRIM(b.[{bb}])) \
          WHERE ISNULL(b.[{d}],'') >= @P1 \
-           AND (LTRIM(RTRIM(ISNULL(b.[{bl}],''))) = '' \
-                OR NOT EXISTS (SELECT 1 FROM BILL r \
-                               WHERE LTRIM(RTRIM(r.[{bk}])) = LTRIM(RTRIM(b.[{bl}])))) \
+           AND LTRIM(RTRIM(ISNULL(b.[{bl}],''))) IN ('', '0') \
          GROUP BY LTRIM(RTRIM(ISNULL(b.[{beh}],'')))",
         beh = ident(&m.beh_behandler),
         d = ident(&m.beh_datum),
-        eb = ident(&m.lblockentry_block),
-        bb = ident(&m.beh_block),
         bl = ident(&m.beh_bill),
-        bk = ident(&m.bill_key),
     );
     let rows = conn.rows(&sql, &[&cutoff]).await?;
     let mut out: Vec<OpenServicesRow> = rows
@@ -528,72 +538,34 @@ async fn sync_once(cfg: &ConnectorConfig, cloud: &CloudClient) -> Result<()> {
     let mut ar_aging: Vec<ArAgingRow> = Vec::new();
     let mut open_services: Vec<OpenServicesRow> = Vec::new();
 
-    // revenue: BEH ⋈ LBLOCKENTRY.
+    // revenue: BEH allein (Betrag = DMBETRAG).
     let req: Vec<(&str, &str)> = vec![
         ("BEH", &map.beh_patnr),
         ("BEH", &map.beh_datum),
         ("BEH", &map.beh_art),
         ("BEH", &map.beh_behandler),
-        ("BEH", &map.beh_block),
-        ("LBLOCKENTRY", &map.lblockentry_block),
-        ("LBLOCKENTRY", &map.lblockentry_betrag),
+        ("BEH", &map.beh_betrag),
     ];
     let missing = disc.missing(&req);
     if missing.is_empty() {
         rows_scanned += count_beh_since(&mut conn, &map, &cutoff).await.unwrap_or(0);
         revenue = query_revenue(&mut conn, &map, &cutoff).await?;
     } else {
-        pending.insert(
-            "revenue".into(),
-            pending_entry(missing, &disc, &["BEH", "LBLOCKENTRY"]),
-        );
+        pending.insert("revenue".into(), pending_entry(missing, &disc, &["BEH"]));
     }
 
-    // payments: KONTO + CASH, je Quelle eigenes Gate (eine Quelle darf liefern,
-    // während die andere noch auf ihr Mapping wartet).
-    let req_konto: Vec<(&str, &str)> = vec![
-        ("KONTO", &map.konto_datum),
-        ("KONTO", &map.konto_betrag),
-        ("KONTO", &map.konto_zahlart),
-    ];
+    // payments: CASH allein (KONTO ist der Kontenrahmen, keine Zahlungsquelle).
     let req_cash: Vec<(&str, &str)> = vec![
         ("CASH", &map.cash_datum),
         ("CASH", &map.cash_betrag),
         ("CASH", &map.cash_zahlart),
     ];
-    let (miss_konto, miss_cash) = (disc.missing(&req_konto), disc.missing(&req_cash));
+    let miss_cash = disc.missing(&req_cash);
     let mut pay_acc: BTreeMap<(String, String), (f64, i64)> = BTreeMap::new();
-    if miss_konto.is_empty() {
-        query_payments_source(
-            &mut conn,
-            "KONTO",
-            &map.konto_datum,
-            &map.konto_betrag,
-            &map.konto_zahlart,
-            &cutoff,
-            &mut pay_acc,
-        )
-        .await?;
-    }
     if miss_cash.is_empty() {
-        query_payments_source(
-            &mut conn,
-            "CASH",
-            &map.cash_datum,
-            &map.cash_betrag,
-            &map.cash_zahlart,
-            &cutoff,
-            &mut pay_acc,
-        )
-        .await?;
-    }
-    if !miss_konto.is_empty() || !miss_cash.is_empty() {
-        let mut missing = miss_konto;
-        missing.extend(miss_cash);
-        pending.insert(
-            "payments".into(),
-            pending_entry(missing, &disc, &["KONTO", "CASH"]),
-        );
+        query_payments_cash(&mut conn, &map, &cutoff, &mut pay_acc).await?;
+    } else {
+        pending.insert("payments".into(), pending_entry(miss_cash, &disc, &["CASH"]));
     }
     let payments: Vec<PaymentRow> = pay_acc
         .into_iter()
@@ -605,42 +577,32 @@ async fn sync_once(cfg: &ConnectorConfig, cloud: &CloudClient) -> Result<()> {
         })
         .collect();
 
-    // ar_aging: FAKT − KONTO.
+    // ar_aging: FAKT allein (offene, nicht stornierte Rechnungen).
     let req: Vec<(&str, &str)> = vec![
-        ("FAKT", &map.fakt_rechnr),
         ("FAKT", &map.fakt_datum),
         ("FAKT", &map.fakt_betrag),
-        ("KONTO", &map.konto_rechnr),
-        ("KONTO", &map.konto_betrag),
+        ("FAKT", &map.fakt_offen),
+        ("FAKT", &map.fakt_storno),
     ];
     let missing = disc.missing(&req);
     if missing.is_empty() {
         ar_aging = query_ar_aging(&mut conn, &map, &snapshot_date, today).await?;
     } else {
-        pending.insert(
-            "ar_aging".into(),
-            pending_entry(missing, &disc, &["FAKT", "KONTO"]),
-        );
+        pending.insert("ar_aging".into(), pending_entry(missing, &disc, &["FAKT"]));
     }
 
-    // open_services: BEH ohne BILL.
+    // open_services: BEH allein, ohne Abrechnungsbezug (LFDPATBILL leer).
     let req: Vec<(&str, &str)> = vec![
         ("BEH", &map.beh_datum),
         ("BEH", &map.beh_behandler),
-        ("BEH", &map.beh_block),
+        ("BEH", &map.beh_betrag),
         ("BEH", &map.beh_bill),
-        ("LBLOCKENTRY", &map.lblockentry_block),
-        ("LBLOCKENTRY", &map.lblockentry_betrag),
-        ("BILL", &map.bill_key),
     ];
     let missing = disc.missing(&req);
     if missing.is_empty() {
         open_services = query_open_services(&mut conn, &map, &cutoff, &snapshot_date).await?;
     } else {
-        pending.insert(
-            "open_services".into(),
-            pending_entry(missing, &disc, &["BEH", "LBLOCKENTRY", "BILL"]),
-        );
+        pending.insert("open_services".into(), pending_entry(missing, &disc, &["BEH"]));
     }
 
     let status = if pending.is_empty() {
@@ -703,6 +665,16 @@ fn last_run_date() -> Option<String> {
 fn mark_ran(date: &str) {
     if let Ok(p) = paths::control_last_run_file() {
         let _ = std::fs::write(p, date);
+    }
+}
+
+/// Löscht den Tages-Marker → der nächste Tick führt den Sync SOFORT erneut aus
+/// (statt bis morgen zu warten). Wird beim Speichern der Steuerungs-Config
+/// aufgerufen, damit ein frisch aktivierter Sync oder ein geändertes Mapping
+/// unmittelbar greift.
+pub fn clear_last_run() {
+    if let Ok(p) = paths::control_last_run_file() {
+        let _ = std::fs::remove_file(p);
     }
 }
 
@@ -771,25 +743,27 @@ mod tests {
 
     #[test]
     fn gate_fehlende_spalte_erzeugt_pending_mapping() {
-        // BEH hat DATUM, aber kein LEISTUNGSART → Teil muss ausgelassen werden.
+        // BEH hat DATUM/PATNR, aber nicht den Betrag DMBETRAG → Teil ausgelassen.
         let disc = disc_with(&[
             ("BEH", "PATNR"),
             ("BEH", "DATUM"),
+            ("BEH", "GOART"),
+            ("BEH", "LEBID"),
             ("BEH", "SONSTWAS"),
-            ("LBLOCKENTRY", "EINZELBETRAG"),
         ]);
         let m = ColumnMap::default();
         let req: Vec<(&str, &str)> = vec![
             ("BEH", &m.beh_patnr),
             ("BEH", &m.beh_datum),
             ("BEH", &m.beh_art),
-            ("LBLOCKENTRY", &m.lblockentry_betrag),
+            ("BEH", &m.beh_behandler),
+            ("BEH", &m.beh_betrag),
         ];
         let missing = disc.missing(&req);
-        assert_eq!(missing, vec!["BEH.LEISTUNGSART".to_string()]);
+        assert_eq!(missing, vec!["BEH.DMBETRAG".to_string()]);
 
-        let entry = pending_entry(missing, &disc, &["BEH", "LBLOCKENTRY"]);
-        assert_eq!(entry["missing"][0], "BEH.LEISTUNGSART");
+        let entry = pending_entry(missing, &disc, &["BEH"]);
+        assert_eq!(entry["missing"][0], "BEH.DMBETRAG");
         let avail: Vec<String> = entry["available"]
             .as_array()
             .unwrap()
@@ -798,7 +772,7 @@ mod tests {
             .collect();
         assert!(avail.contains(&"BEH.PATNR".to_string()));
         assert!(avail.contains(&"BEH.SONSTWAS".to_string()));
-        assert!(avail.contains(&"LBLOCKENTRY.EINZELBETRAG".to_string()));
+        assert!(avail.contains(&"BEH.GOART".to_string()));
 
         // Gate grün, wenn alles da ist (case-insensitiv).
         assert!(disc.has("BEH", "patnr"));

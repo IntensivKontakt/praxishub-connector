@@ -20,6 +20,12 @@ pub fn get_config() -> Result<ConnectorConfig, String> {
 #[tauri::command]
 pub async fn save_config(app: AppHandle, config: ConnectorConfig) -> Result<(), String> {
     config.save().map_err(err)?;
+    // Bei aktivem Steuerungs-Sync den Tages-Marker löschen, damit ein frisch
+    // aktivierter Sync bzw. ein geändertes Spalten-Mapping SOFORT läuft (nicht
+    // erst am Folgetag) — der respawnende Loop tickt beim Start unmittelbar.
+    if config.z1_control_enabled {
+        connector_core::z1db::clear_control_last_run();
+    }
     restart_watcher(&app).await;
     Ok(())
 }
