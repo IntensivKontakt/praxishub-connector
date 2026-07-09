@@ -67,9 +67,18 @@ fn sql_amount(expr: &str) -> String {
     )
 }
 
-/// Rust-Pendant zu [`sql_amount`] (dokumentiert + testet die Parsing-Semantik;
-/// das produktive Parsing passiert SQL-seitig in [`sql_amount`]).
-#[cfg_attr(not(test), allow(dead_code))]
+/// Verpackt einen Float-Betragsausdruck als **Fixkomma-String** (kein wissen-
+/// schaftliches Format). Grund: der tiberius-Treiber liefert `SUM(float)`/float
+/// per Spaltenname als 0 zurück (Integer- und String-Reads funktionieren dagegen
+/// korrekt — am ZMM verifiziert: n_leistungen stimmte, honorar war 0). Deshalb den
+/// Betrag als `decimal(19,2)`→`varchar` zurückgeben und in Rust mit [`parse_amount`]
+/// parsen.
+fn as_amount_str(float_expr: &str) -> String {
+    format!("CONVERT(varchar(40), CAST({float_expr} AS decimal(19,2)))")
+}
+
+/// Parst einen (SQL-seitig als String gelieferten) Betrag robust nach `f64` —
+/// deutsche Komma- wie Punkt-Notation. Produktiv genutzt (s. [`as_amount_str`]).
 fn parse_amount(s: &str) -> f64 {
     let t = s.trim();
     if t.is_empty() {
@@ -348,12 +357,12 @@ async fn query_revenue(
     // Umsatz aus BEH ALLEIN (erbrachte Leistungen mit eigenem Betrag DMBETRAG) —
     // KEIN Join zu LBLOCKENTRY mehr (der frühere LFDLBLOCK-Join war ein Kreuzprodukt
     // über 1,46 Mio. Zeilen → Timeout). Gruppierung je Monat × Art × Behandler.
-    let amt = sql_amount(&format!("b.[{}]", ident(&m.beh_betrag)));
+    let honorar = as_amount_str(&format!("SUM({})", sql_amount(&format!("b.[{}]", ident(&m.beh_betrag)))));
     let sql = format!(
         "SELECT SUBSTRING(ISNULL(b.[{d}],''),1,6) AS YM, \
                 LTRIM(RTRIM(ISNULL(b.[{a}],''))) AS ART, \
                 LTRIM(RTRIM(ISNULL(b.[{beh}],''))) AS BEHANDLER, \
-                SUM({amt}) AS HONORAR, \
+                {honorar} AS HONORAR, \
                 CAST(COUNT(*) AS int) AS N_LEIST, \
                 CAST(COUNT(DISTINCT LTRIM(RTRIM(b.[{p}]))) AS int) AS N_FAELLE \
          FROM BEH b \
@@ -378,7 +387,7 @@ async fn query_revenue(
             gruppe: None,   // keine belastbare Gruppen-Spalte bekannt → null
             behandler: get_str(r, "BEHANDLER"),
             standort: None, // Z1-Einzelstandort; Spalte unbekannt → null
-            honorar: round2(r.get::<f64, _>("HONORAR").unwrap_or(0.0)),
+            honorar: round2(parse_amount(&get_str(r, "HONORAR"))),
             eigenlabor: None, // Labor-Spalten unbekannt → null (nicht 0 erfinden)
             fremdlabor: None,
             n_leistungen: i64::from(r.get::<i32, _>("N_LEIST").unwrap_or(0)),
@@ -399,11 +408,11 @@ async fn query_payments_cash(
     cutoff: &str,
     acc: &mut BTreeMap<(String, String), (f64, i64)>,
 ) -> Result<()> {
-    let amt = sql_amount(&format!("[{}]", ident(&m.cash_betrag)));
+    let summe = as_amount_str(&format!("SUM({})", sql_amount(&format!("[{}]", ident(&m.cash_betrag)))));
     let sql = format!(
         "SELECT SUBSTRING(ISNULL([{d}],''),1,6) AS YM, \
                 LTRIM(RTRIM(ISNULL([{z}],''))) AS ART, \
-                SUM({amt}) AS SUMME, CAST(COUNT(*) AS int) AS N \
+                {summe} AS SUMME, CAST(COUNT(*) AS int) AS N \
          FROM CASH \
          WHERE ISNULL([{d}],'') >= @P1 \
            AND LTRIM(RTRIM(ISNULL([{s}],''))) IN ('', '0') \
@@ -419,7 +428,7 @@ async fn query_payments_cash(
         };
         let art = map_art(&get_str(r, "ART"));
         let e = acc.entry((period, art)).or_insert((0.0, 0));
-        e.0 += r.get::<f64, _>("SUMME").unwrap_or(0.0);
+        e.0 += parse_amount(&get_str(r, "SUMME"));
         e.1 += i64::from(r.get::<i32, _>("N").unwrap_or(0));
     }
     Ok(())
@@ -436,8 +445,9 @@ async fn query_ar_aging(
     today: chrono::NaiveDate,
 ) -> Result<Vec<ArAgingRow>> {
     let amt_f = sql_amount(&format!("[{}]", ident(&m.fakt_betrag)));
+    let offen_str = as_amount_str(&amt_f);
     let sql = format!(
-        "SELECT ISNULL([{fd}],'') AS DAT, {amt_f} AS OFFEN \
+        "SELECT ISNULL([{fd}],'') AS DAT, {offen_str} AS OFFEN \
          FROM FAKT \
          WHERE LTRIM(RTRIM(ISNULL([{offen}],''))) = '' \
            AND LTRIM(RTRIM(ISNULL([{storno}],''))) IN ('', '0') \
@@ -449,7 +459,7 @@ async fn query_ar_aging(
     let rows = conn.rows(&sql, &[]).await?;
     let mut agg: BTreeMap<&'static str, (f64, i64)> = BTreeMap::new();
     for r in &rows {
-        let offen = r.get::<f64, _>("OFFEN").unwrap_or(0.0);
+        let offen = parse_amount(&get_str(r, "OFFEN"));
         let bucket = chrono::NaiveDate::parse_from_str(get_str(r, "DAT").as_str(), "%Y%m%d")
             .ok()
             .map(|d| bucket_for((today - d).num_days()))
@@ -479,10 +489,10 @@ async fn query_open_services(
     // Liegengeblieben = erbrachte BEH-Leistung ohne Abrechnungsbezug (LFDPATBILL leer/0),
     // Betrag aus BEH.DMBETRAG. Kein Join, kein BILL-Subquery — der leere Abrechnungs-
     // Verweis IST das „nicht abgerechnet"-Signal.
-    let amt = sql_amount(&format!("b.[{}]", ident(&m.beh_betrag)));
+    let offen = as_amount_str(&format!("SUM({})", sql_amount(&format!("b.[{}]", ident(&m.beh_betrag)))));
     let sql = format!(
         "SELECT LTRIM(RTRIM(ISNULL(b.[{beh}],''))) AS BEHANDLER, \
-                SUM({amt}) AS OFFEN, CAST(COUNT(*) AS int) AS N, \
+                {offen} AS OFFEN, CAST(COUNT(*) AS int) AS N, \
                 MIN(NULLIF(LTRIM(RTRIM(ISNULL(b.[{d}],''))),'')) AS OLDEST \
          FROM BEH b \
          WHERE ISNULL(b.[{d}],'') >= @P1 \
@@ -498,7 +508,7 @@ async fn query_open_services(
         .map(|r| OpenServicesRow {
             snapshot_date: snapshot_date.to_string(),
             behandler: get_str(r, "BEHANDLER"),
-            offen_betrag: round2(r.get::<f64, _>("OFFEN").unwrap_or(0.0)),
+            offen_betrag: round2(parse_amount(&get_str(r, "OFFEN"))),
             n: i64::from(r.get::<i32, _>("N").unwrap_or(0)),
             oldest: ymd_to_iso(&get_str(r, "OLDEST")),
         })
