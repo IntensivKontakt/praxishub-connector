@@ -21,7 +21,8 @@
 //!      **nie erfundene Zahlen** geliefert.
 //!
 //! Ablauf: [`spawn`] tickt stündlich, führt den Sync aber nur **einmal pro Tag**
-//! (persistierter Marker) und nur im Stundenfenster `z1_control_hour ± 1` aus;
+//! (persistierter Marker) am oder nach der frühesten Stunde `z1_control_hour` aus —
+//! war der PC in der Nacht aus, wird der Lauf am Morgen nachgeholt (Anacron-Prinzip);
 //! Timeout 300 s pro Zyklus (Muster `hkp.rs`).
 
 use crate::cloud::{
@@ -677,9 +678,18 @@ async fn sync_once(cfg: &ConnectorConfig, cloud: &CloudClient) -> Result<()> {
 // ── Tages-Marker + Zeitfenster ───────────────────────────────────────────────
 
 /// Liegt `now_hour` im Fenster `target ± 1` (mit Tages-Überlauf)?
-fn in_hour_window(now_hour: u32, target: u8) -> bool {
-    let diff = (24 + now_hour as i32 - i32::from(target % 24)) % 24;
-    diff <= 1 || diff == 23
+/// Anacron-Prinzip statt fixem Cron: Der Sync soll **einmal pro Kalendertag** laufen,
+/// und zwar am oder nach der frühesten Stunde `earliest_hour` beim ersten Tick, an dem
+/// der PC an ist. Ist der Rechner zur Zielstunde aus (nachts der Normalfall in Praxen),
+/// wird der Lauf am Morgen NACHGEHOLT statt ausgelassen; ein 24/7-Mini-PC trifft die
+/// Stunde exakt (Nebenlast). `earliest_hour` muss ≤ Öffnungszeit sein (Default 3),
+/// sonst käme der PC nie in ein Zeitfenster ≥ earliest_hour und der Lauf bliebe aus.
+fn should_run(now: &chrono::DateTime<chrono::Local>, earliest_hour: u8, last_run: Option<&str>) -> bool {
+    let today = now.format("%Y-%m-%d").to_string();
+    if last_run == Some(today.as_str()) {
+        return false; // heute schon erfolgreich gelaufen → kein Doppellauf
+    }
+    now.hour() >= u32::from(earliest_hour % 24)
 }
 
 fn last_run_date() -> Option<String> {
@@ -697,8 +707,9 @@ fn mark_ran(date: &str) {
 }
 
 /// Startet den täglichen Praxis-Steuerungs-Sync als eigenständige Schleife
-/// (Muster `hkp::spawn`). Tickt stündlich; führt den Sync nur einmal pro Tag
-/// (persistierter Marker) und nur im Fenster `z1_control_hour ± 1` aus.
+/// (Muster `hkp::spawn`). Tickt stündlich; führt den Sync einmal pro Tag
+/// (persistierter Marker) am oder nach `z1_control_hour` aus und holt einen in der
+/// Nacht (PC aus) verpassten Lauf am Morgen nach (siehe [`should_run`]).
 pub fn spawn(cfg: ConnectorConfig) -> LoopHandle {
     let (tx, mut rx) = tokio::sync::watch::channel(false);
     let join = tokio::spawn(async move {
@@ -723,17 +734,16 @@ pub fn spawn(cfg: ConnectorConfig) -> LoopHandle {
             tokio::select! {
                 _ = ticker.tick() => {
                     let now = chrono::Local::now();
-                    if !in_hour_window(now.hour(), cfg.z1_control_hour) {
+                    if !should_run(&now, cfg.z1_control_hour, last_run_date().as_deref()) {
                         continue;
                     }
                     let today = now.format("%Y-%m-%d").to_string();
-                    if last_run_date().as_deref() == Some(today.as_str()) {
-                        continue; // heute schon gelaufen
-                    }
                     match tokio::time::timeout(CYCLE_TIMEOUT, sync_once(&cfg, &cloud)).await {
-                        Ok(Ok(())) => mark_ran(&today), // Marker nur bei Erfolg → sonst Retry im Fenster
-                        Ok(Err(e)) => warn!(error=%e, "Praxis-Steuerungs-Sync fehlgeschlagen"),
-                        Err(_) => warn!("Praxis-Steuerungs-Sync abgebrochen (Timeout 300 s)"),
+                        // Marker (Datum) nur bei Erfolg → ein Fehlschlag (Z1/Netz kurz weg)
+                        // wird zur nächsten vollen Stunde erneut versucht, den ganzen Tag über.
+                        Ok(Ok(())) => mark_ran(&today),
+                        Ok(Err(e)) => warn!(error=%e, "Praxis-Steuerungs-Sync fehlgeschlagen — Retry zur nächsten Stunde"),
+                        Err(_) => warn!("Praxis-Steuerungs-Sync abgebrochen (Timeout 300 s) — Retry zur nächsten Stunde"),
                     }
                 }
                 _ = rx.changed() => {
@@ -930,14 +940,23 @@ mod tests {
     }
 
     #[test]
-    fn stunden_fenster_mit_tagesueberlauf() {
-        assert!(in_hour_window(3, 3));
-        assert!(in_hour_window(2, 3));
-        assert!(in_hour_window(4, 3));
-        assert!(!in_hour_window(5, 3));
-        assert!(!in_hour_window(15, 3));
-        assert!(in_hour_window(23, 0)); // Überlauf: 23 Uhr liegt in 0 ± 1
-        assert!(in_hour_window(0, 23));
+    fn should_run_holt_verpassten_nachtlauf_nach() {
+        use chrono::{Local, TimeZone};
+        let at = |h: u32| Local.with_ymd_and_hms(2026, 7, 9, h, 0, 0).unwrap();
+        let heute = "2026-07-09";
+        let gestern = "2026-07-08";
+
+        // 24/7-Mini-PC: um 3 Uhr an, heute noch nicht gelaufen → läuft (Nebenlast nachts).
+        assert!(should_run(&at(3), 3, Some(gestern)));
+        // Normaler Praxis-PC: um 3 Uhr aus, bootet um 8 Uhr → Nachtlauf wird nachgeholt.
+        assert!(should_run(&at(8), 3, Some(gestern)));
+        // Vor der frühesten Stunde (1 Uhr, PC lief lange) → noch nicht.
+        assert!(!should_run(&at(1), 3, Some(gestern)));
+        // Heute schon erfolgreich gelaufen → kein Doppellauf, auch wenn PC den Tag über an ist.
+        assert!(!should_run(&at(8), 3, Some(heute)));
+        assert!(!should_run(&at(18), 3, Some(heute)));
+        // Noch nie gelaufen, Morgen → läuft.
+        assert!(should_run(&at(9), 3, None));
     }
 
     #[test]

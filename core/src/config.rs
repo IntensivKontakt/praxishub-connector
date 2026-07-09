@@ -108,7 +108,9 @@ pub struct ConnectorConfig {
     /// aktivieren. Opt-in, Default aus.
     #[serde(default)]
     pub z1_control_enabled: bool,
-    /// Lokale Stunde des täglichen Laufs (Fenster ± 1 h). Default 3 = 03:00.
+    /// FRÜHESTE lokale Stunde des täglichen Laufs (Default 3 = 03:00). Der Sync läuft
+    /// einmal/Tag am oder nach dieser Stunde beim ersten Mal, wenn der PC an ist — war
+    /// er nachts aus, wird morgens nachgeholt (Anacron). Muss ≤ Öffnungszeit sein.
     #[serde(default = "default_control_hour")]
     pub z1_control_hour: u8,
     /// Zeitfenster der Monats-Aggregate (revenue/payments/open_services).
