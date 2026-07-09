@@ -41,11 +41,11 @@ use tracing::{info, warn};
 const CYCLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Tabellen, deren Spalten per Discovery erhoben und mitgeschickt werden.
-/// (LEB/PERSONAL für die Behandler-Auflösung; GO/PUNKTWERTE für die spätere
-/// berechnete GKV-je-Behandler-Achse.)
-const DISCOVERY_TABLES: [&str; 11] = [
+/// (LEB/PERSONAL für die Behandler-Auflösung; GO/PUNKTWERTE für den KCH-Punktwert;
+/// ZPLAN/PARHIT/ZEHIT/KBRHIT für die GKV-Sparten PAR/ZE/KBR je Behandler.)
+const DISCOVERY_TABLES: [&str; 15] = [
     "BEH", "LBLOCK", "LBLOCKENTRY", "BILL", "FAKT", "KONTO", "CASH", "LEB", "PERSONAL",
-    "GO", "PUNKTWERTE",
+    "GO", "PUNKTWERTE", "ZPLAN", "PARHIT", "KBRHIT", "ZEHIT",
 ];
 
 fn get_str(row: &tiberius::Row, col: &str) -> String {
@@ -113,6 +113,24 @@ fn period_from_ym(ym: &str) -> Option<String> {
         return None;
     }
     Some(format!("{}-{}-01", &t[..4], &t[4..6]))
+}
+
+/// `"MM.JJJJ"` → Monats-Periode `"JJJJ-MM-01"` (None bei Müll). Format der
+/// Sammelrechnungs-/Plan-Perioden (BESCHREIBUNG-Suffix, `DTADATUM`-Ableitung).
+fn period_from_mmjjjj(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.len() != 7 || t.as_bytes()[2] != b'.' {
+        return None;
+    }
+    let (mm, jjjj) = (&t[..2], &t[3..]);
+    if !mm.chars().all(|c| c.is_ascii_digit()) || !jjjj.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let month: u32 = mm.parse().ok()?;
+    if !(1..=12).contains(&month) {
+        return None;
+    }
+    Some(format!("{jjjj}-{mm}-01"))
 }
 
 /// `JJJJMMTT` → ISO-Datum `"JJJJ-MM-TT"` (None bei Müll).
@@ -372,13 +390,19 @@ const BEHANDLER_JOIN: &str =
     "LEFT JOIN LEB lb ON LTRIM(RTRIM(lb.LEBID)) = LTRIM(RTRIM(b.[{leb}])) \
      LEFT JOIN PERSONAL pe ON LTRIM(RTRIM(pe.PID)) = LTRIM(RTRIM(lb.PID))";
 
-/// Honorarumsatz. Zwei koordinierte Quellen, KEIN Doppelzählen (docs/Z1-BILLING.md §4):
-///   1. **Privat/GOZ** (GOART q/2/3/4/7): exakt aus `BEH.DMBETRAG`, je Monat × Behandler
-///      (PERSONAL.KUERZEL) × Art.
-///   2. **GKV/BEMA**: fakturierter Gesamtwert aus `FAKT` (KTRAEGER=1: ZHON Honorar +
-///      ELAB Eigenlabor), je Monat, ohne Behandler (kennt FAKT nicht) — art="bema".
-/// Privat kommt aus BEH, GKV aus FAKT → überschneidungsfrei. Die berechnete GKV-je-
-/// Behandler-Achse (BEH+GO+Punktwert) ist Folgeschritt.
+/// Honorarumsatz je Monat × Behandler × Abrechnungsart aus **fünf überschneidungs-
+/// freien Quellen** (docs/Z1-BILLING.md §4, am ZMM faktura-reconciled):
+///   1. **Privat/GOZ** (GOART q/2/3/4/7): exakt aus `BEH.DMBETRAG`, je Monat × Behandler.
+///   2. **KCH** (art=bema, gruppe=KCH): BEH-BEMA (GOART 'g') × GO-Gebührenpunkt ×
+///      aktueller Punktwert, je Monat × Behandler (BEH.LEBID).
+///   3. **PAR** (art=bema, gruppe=PAR): Einzelrechnungen (FAKT RART 5050) + Sammel-
+///      rechnung `0kp` pro-rata auf PARHIT-Pläne, Behandler = ZPLAN.LEBID.
+///   4. **ZE**  (art=bema, gruppe=ZE):  Einzelrechnungen (FAKT RART 5060/6020) +
+///      Sammelrechnung `0kz` pro-rata auf ZEHIT-Pläne, Behandler = ZPLAN.LEBID.
+///   5. **KBR** (art=bema, gruppe=KBR): Sammelrechnung `0kb` pro-rata auf KBRHIT-Pläne.
+///
+/// Behandler-Achse: KCH/GOZ über `BEH.LEBID`; ZE/PAR/KBR IMMER über den Plan
+/// (`ZPLAN.LEBID`), NIE über die Rechnung. Alle Schlüssel mit `LTRIM(RTRIM())`.
 async fn query_revenue(
     conn: &mut Z1Connection,
     m: &ColumnMap,
@@ -422,43 +446,353 @@ async fn query_revenue(
         });
     }
 
-    // 2) GKV/BEMA aus FAKT (fakturiert) je Monat — Honorar (ZHON) + Eigenlabor (ELAB),
-    //    stornierte raus, nur KTRAEGER=1 (GKV). Kein Behandler in FAKT.
-    let zhon = as_amount_str(&format!("SUM({})", sql_amount("[ZHON]")));
-    let elab = as_amount_str(&format!("SUM({})", sql_amount("[ELAB]")));
-    let flab = as_amount_str(&format!("SUM({})", sql_amount("[FLAB]")));
-    let sql_gkv = format!(
-        "SELECT SUBSTRING(ISNULL([{fd}],''),1,6) AS YM, \
-                {zhon} AS HONORAR, {elab} AS ELAB, {flab} AS FLAB, \
-                CAST(COUNT(*) AS int) AS N_LEIST, \
-                CAST(COUNT(DISTINCT LTRIM(RTRIM([{p}]))) AS int) AS N_FAELLE \
-         FROM FAKT \
-         WHERE ISNULL([{fd}],'') >= @P1 \
-           AND LTRIM(RTRIM(ISNULL([{st}],''))) IN ('', '0') \
-           AND LTRIM(RTRIM(ISNULL([KTRAEGER],''))) = '1' \
-         GROUP BY SUBSTRING(ISNULL([{fd}],''),1,6)",
-        fd = ident(&m.fakt_datum),
-        st = ident(&m.fakt_storno),
+    // 2)–5) GKV je Behandler nach Sparte (KCH/PAR/ZE/KBR), ersetzt den früheren
+    //        FAKT.ZHON-GKV-Gesamtwert (der keinen Behandler kannte).
+    out.extend(query_revenue_kch(conn, m, cutoff).await?);
+    out.extend(query_revenue_par(conn, m, cutoff).await?);
+    out.extend(query_revenue_ze(conn, m, cutoff).await?);
+    out.extend(query_revenue_kbr(conn, m, cutoff).await?);
+
+    out.sort_by(|a, b| {
+        (&a.period, &a.art, &a.gruppe, &a.behandler).cmp(&(&b.period, &b.art, &b.gruppe, &b.behandler))
+    });
+    Ok(out)
+}
+
+/// **Behandler-Auflösung über den Plan** (`ZPLAN.LEBID → LEB.PID → PERSONAL.KUERZEL`).
+/// Für ZE/PAR/KBR gilt der behandelnde Arzt des HKP/Plans, NICHT der Rechnungssteller.
+/// Der Aufrufer muss `zp.LEBID` bereitstellen (via OUTER APPLY je Fall).
+const PLAN_BEHANDLER_JOIN: &str =
+    "LEFT JOIN LEB lb ON LTRIM(RTRIM(lb.LEBID)) = LTRIM(RTRIM(zp.LEBID)) \
+     LEFT JOIN PERSONAL pe ON LTRIM(RTRIM(pe.PID)) = LTRIM(RTRIM(lb.PID))";
+
+/// SQL-Ausdruck Behandler-Kürzel (Fallback = das rohe LEBID-Feld `raw_lebid`).
+fn behandler_expr(raw_lebid: &str) -> String {
+    format!("ISNULL(NULLIF(LTRIM(RTRIM(pe.KUERZEL)),''), LTRIM(RTRIM({raw_lebid})))")
+}
+
+/// **KCH** (art=bema, gruppe=KCH): konservierende/chirurgische BEMA-Leistungen.
+/// Honorar = Σ (GO-Gebührenpunkt × Anzahl × aktueller Punktwert) je Monat × Behandler.
+/// GO-Punktwert (`pw`) = aktuellster Wert je PWLART (ABDATUM ≤ heute); je BEH-Zeile
+/// die zum Leistungsdatum gültige GO-Position (ABDATUM ≤ DATUM, BISDATUM offen/≥ DATUM).
+async fn query_revenue_kch(
+    conn: &mut Z1Connection,
+    m: &ColumnMap,
+    cutoff: &str,
+) -> Result<Vec<RevenueRow>> {
+    let today = chrono::Local::now().format("%Y%m%d").to_string();
+    // Punktwert (€/Punkt) = euro(PWWEST)/10000 (PWWEST = Cent × 100). Aktuellster je
+    // PWLART: Zeilen mit ABDATUM ≤ heute, davon AVG (i. d. R. genau eine gültige Zeile).
+    let pw_euro = sql_amount("PWWEST");
+    let behandler = behandler_expr(&format!("b.[{}]", ident(&m.beh_behandler)));
+    let beh_join = BEHANDLER_JOIN.replace("{leb}", &ident(&m.beh_behandler));
+    // GEBPKT/100 (Gebührenpunkte) × ANZAHL/100 × Punktwert(€). GEBPKT/ANZAHL sind
+    // Hundertstel-Ganzzahlen (kein 'e'-Präfix); Punktwert = PWWEST(Cent)/10000.
+    let honorar_f = "SUM( \
+        (CAST(NULLIF(REPLACE(REPLACE(g.GEBPKT,'e',''),' ',''),'') AS float)/100.0) \
+        * (CAST(NULLIF(REPLACE(REPLACE(b.[{anz}],'e',''),' ',''),'') AS float)/100.0) \
+        * ISNULL(pw.pwert, 0) )";
+    let honorar_f = honorar_f.replace("{anz}", &ident("ANZAHL"));
+    let honorar = as_amount_str(&honorar_f);
+    let sql = format!(
+        "WITH pw AS ( \
+            SELECT LTRIM(RTRIM(PWLART)) AS PWLART, \
+                   AVG(({pw_euro})/10000.0) AS pwert \
+            FROM PUNKTWERTE \
+            WHERE LTRIM(RTRIM(ISNULL(ABDATUM,''))) <> '' AND ABDATUM <= '{today}' \
+            GROUP BY LTRIM(RTRIM(PWLART)) \
+        ) \
+        SELECT SUBSTRING(ISNULL(b.[{d}],''),1,6) AS YM, \
+               {behandler} AS BEHANDLER, \
+               {honorar} AS HONORAR, \
+               CAST(COUNT(*) AS int) AS N_LEIST, \
+               CAST(COUNT(DISTINCT LTRIM(RTRIM(b.[{p}]))) AS int) AS N_FAELLE \
+        FROM BEH b {beh_join} \
+        CROSS APPLY ( \
+            SELECT TOP 1 g.GEBPKT, g.PWLART FROM GO g \
+            WHERE LTRIM(RTRIM(g.KYLSTNR)) = LTRIM(RTRIM(b.[{kyl}])) \
+              AND g.ABDATUM <= b.[{d}] \
+              AND (g.BISDATUM IS NULL OR LTRIM(RTRIM(g.BISDATUM)) = '' OR g.BISDATUM >= b.[{d}]) \
+              AND LTRIM(RTRIM(ISNULL(g.GEBPKT,''))) <> '' \
+            ORDER BY g.ABDATUM DESC \
+        ) g \
+        LEFT JOIN pw ON pw.PWLART = LTRIM(RTRIM(g.PWLART)) \
+        WHERE LTRIM(RTRIM(ISNULL(b.[{a}],''))) = 'g' \
+          AND ISNULL(b.[{d}],'') >= @P1 \
+        GROUP BY SUBSTRING(ISNULL(b.[{d}],''),1,6), {behandler}",
+        d = ident(&m.beh_datum),
+        a = ident(&m.beh_art),
         p = ident(&m.beh_patnr),
+        kyl = ident("KYLSTNR"),
     );
-    for r in &conn.rows(&sql_gkv, &[&cutoff]).await? {
+    let mut out: Vec<RevenueRow> = Vec::new();
+    for r in &conn.rows(&sql, &[&cutoff]).await? {
         let Some(period) = period_from_ym(&get_str(r, "YM")) else { continue };
         out.push(RevenueRow {
             period,
             art: "bema".into(),
-            gruppe: None,
-            behandler: String::new(), // FAKT kennt keinen Behandler
+            gruppe: Some("KCH".into()),
+            behandler: get_str(r, "BEHANDLER"),
             standort: None,
             honorar: round2(parse_amount(&get_str(r, "HONORAR"))),
-            eigenlabor: Some(round2(parse_amount(&get_str(r, "ELAB")))),
-            fremdlabor: Some(round2(parse_amount(&get_str(r, "FLAB")))),
+            eigenlabor: None,
+            fremdlabor: None,
+            n_leistungen: i64::from(r.get::<i32, _>("N_LEIST").unwrap_or(0)),
+            n_faelle: i64::from(r.get::<i32, _>("N_FAELLE").unwrap_or(0)),
+        });
+    }
+    Ok(out)
+}
+
+/// SQL-CTE `sammel`: Sammelrechnungs-Honorar (`FAKT.ZHON`) je Monatsperiode für ein
+/// Sammel-Kto (`0kz`/`0kp`/`0kb`). Periode = `MM.JJJJ`-Suffix der BESCHREIBUNG.
+/// `kto` ist ein Literal aus dieser Funktion (kein User-Input).
+fn sammel_cte(kto: &str) -> String {
+    let zhon = sql_amount("[ZHON]");
+    format!(
+        "sammel AS ( \
+            SELECT RIGHT(LTRIM(RTRIM([BESCHREIBUNG])),7) AS periode, \
+                   SUM({zhon}) AS zhon \
+            FROM FAKT \
+            WHERE LTRIM(RTRIM([PATNR])) = '{kto}' \
+              AND LTRIM(RTRIM(ISNULL([STORNIERT],''))) <> '1' \
+              AND LEN(LTRIM(RTRIM(ISNULL([BESCHREIBUNG],'')))) >= 7 \
+              AND SUBSTRING(RIGHT(LTRIM(RTRIM([BESCHREIBUNG])),7),3,1) = '.' \
+            GROUP BY RIGHT(LTRIM(RTRIM([BESCHREIBUNG])),7) \
+        )"
+    )
+}
+
+/// Pro-rata-Sammelrechnung → RevenueRows je (Periode × Behandler): der Sammelbetrag
+/// je Periode wird nach dem Gewicht (Einzel-HKP-Summe) auf die Behandler verteilt.
+/// `hit_from` = FROM/APPLY-Klausel, die `periode`, `gewicht` und `LEBID_RAW`
+/// bereitstellt (siehe Aufrufer). Muster: sammel → fall → quote (SUM OVER auf
+/// eigener Ebene, SQL-Server verbietet SUM(x) OVER() direkt im Aggregat) → final.
+async fn query_sammel_prorata(
+    conn: &mut Z1Connection,
+    cutoff: &str,
+    kto: &str,
+    gruppe: &str,
+    fall_select: &str,
+) -> Result<Vec<RevenueRow>> {
+    let sammel = sammel_cte(kto);
+    let plan_join = PLAN_BEHANDLER_JOIN;
+    // Fallback = das rohe Plan-LEBID (im agg-CTE als LEBID exponiert; PLAN_BEHANDLER_JOIN
+    // matcht auf zp.LEBID → hier per abgeleitetem Alias `zp` bereitgestellt).
+    let behandler = behandler_expr("agg.LEBID");
+    // sammel → fall (periode, LEBID_RAW, gewicht) → quote (pro-rata-Quote q, SUM OVER
+    // auf eigener Ebene) → agg (Honorar je periode×LEBID) → final (LEBID→KUERZEL).
+    let sql = format!(
+        "WITH {sammel}, \
+         fall AS ( {fall_select} ), \
+         quote AS ( \
+            SELECT periode, LEBID_RAW, gewicht, \
+                   gewicht / NULLIF(SUM(gewicht) OVER (PARTITION BY periode), 0) AS q \
+            FROM fall \
+         ), \
+         agg AS ( \
+            SELECT quote.periode AS periode, quote.LEBID_RAW AS LEBID, \
+                   SUM(sammel.zhon * quote.q) AS honorar \
+            FROM quote \
+            JOIN sammel ON sammel.periode = quote.periode \
+            GROUP BY quote.periode, quote.LEBID_RAW \
+         ) \
+         SELECT agg.periode AS PERIODE, \
+                {behandler} AS BEHANDLER, \
+                {honorar} AS HONORAR \
+         FROM agg \
+         OUTER APPLY (SELECT agg.LEBID AS LEBID) zp \
+         {plan_join} \
+         GROUP BY agg.periode, {behandler}",
+        behandler = behandler,
+        honorar = as_amount_str("SUM(agg.honorar)"),
+    );
+    let mut out: Vec<RevenueRow> = Vec::new();
+    for r in &conn.rows(&sql, &[&cutoff]).await? {
+        let Some(period) = period_from_mmjjjj(&get_str(r, "PERIODE")) else { continue };
+        out.push(RevenueRow {
+            period,
+            art: "bema".into(),
+            gruppe: Some(gruppe.into()),
+            behandler: get_str(r, "BEHANDLER"),
+            standort: None,
+            honorar: round2(parse_amount(&get_str(r, "HONORAR"))),
+            eigenlabor: None,
+            fremdlabor: None,
+            n_leistungen: 0,
+            n_faelle: 0,
+        });
+    }
+    Ok(out)
+}
+
+/// **PAR** (art=bema, gruppe=PAR): 1a Einzelrechnungen (FAKT RART 5050, GKV, nicht
+/// storniert, numerische PATNR) je Monat × Plan-Behandler; 1b Sammelrechnung `0kp`
+/// pro-rata auf die PARHIT-Pläne der jeweiligen Periode.
+async fn query_revenue_par(
+    conn: &mut Z1Connection,
+    m: &ColumnMap,
+    cutoff: &str,
+) -> Result<Vec<RevenueRow>> {
+    let mut out: Vec<RevenueRow> = Vec::new();
+
+    // 1a Einzel: FAKT RART=5050 ⋈ PARHIT ⋈ ZPLAN(→LEBID) → Behandler.
+    let honorar = as_amount_str(&format!("SUM({})", sql_amount("f.[ZHON]")));
+    let behandler = behandler_expr("zp.LEBID");
+    let plan_join = PLAN_BEHANDLER_JOIN;
+    let sql_einzel = format!(
+        "SELECT SUBSTRING(ISNULL(f.[{fd}],''),1,6) AS YM, \
+                {behandler} AS BEHANDLER, \
+                {honorar} AS HONORAR, \
+                CAST(COUNT(*) AS int) AS N_LEIST, \
+                CAST(COUNT(DISTINCT LTRIM(RTRIM(f.[PATNR]))) AS int) AS N_FAELLE \
+         FROM FAKT f \
+         JOIN PARHIT h ON LTRIM(RTRIM(h.PATNR)) = LTRIM(RTRIM(f.PATNR)) \
+                      AND LTRIM(RTRIM(h.LFDPATBILL)) = LTRIM(RTRIM(f.LFDPATBILL)) \
+         OUTER APPLY ( \
+            SELECT TOP 1 zp.LEBID FROM ZPLAN zp \
+            WHERE LTRIM(RTRIM(zp.PATNR)) = LTRIM(RTRIM(h.PATNR)) \
+              AND LTRIM(RTRIM(zp.LFDPLAN)) = LTRIM(RTRIM(h.LFDPLAN)) \
+         ) zp \
+         {plan_join} \
+         WHERE LTRIM(RTRIM(ISNULL(f.[RART],''))) = '5050' \
+           AND LTRIM(RTRIM(ISNULL(f.[KTRAEGER],''))) = '1' \
+           AND LTRIM(RTRIM(ISNULL(f.[STORNIERT],''))) <> '1' \
+           AND f.[PATNR] NOT LIKE '%[^0-9 ]%' \
+           AND ISNULL(f.[{fd}],'') >= @P1 \
+         GROUP BY SUBSTRING(ISNULL(f.[{fd}],''),1,6), {behandler}",
+        fd = ident(&m.fakt_datum),
+    );
+    for r in &conn.rows(&sql_einzel, &[&cutoff]).await? {
+        let Some(period) = period_from_ym(&get_str(r, "YM")) else { continue };
+        out.push(RevenueRow {
+            period,
+            art: "bema".into(),
+            gruppe: Some("PAR".into()),
+            behandler: get_str(r, "BEHANDLER"),
+            standort: None,
+            honorar: round2(parse_amount(&get_str(r, "HONORAR"))),
+            eigenlabor: None,
+            fremdlabor: None,
             n_leistungen: i64::from(r.get::<i32, _>("N_LEIST").unwrap_or(0)),
             n_faelle: i64::from(r.get::<i32, _>("N_FAELLE").unwrap_or(0)),
         });
     }
 
-    out.sort_by(|a, b| (&a.period, &a.art, &a.behandler).cmp(&(&b.period, &b.art, &b.behandler)));
+    // 1b Sammel 0kp pro-rata (Gewicht = PARHIT.SUMTOTAL € je Plan/Periode).
+    let sumtotal = sql_amount("h.SUMTOTAL");
+    let fall = format!(
+        "SELECT SUBSTRING(h.DTADATUM,5,2)+'.'+LEFT(h.DTADATUM,4) AS periode, \
+                LTRIM(RTRIM(zp.LEBID)) AS LEBID_RAW, \
+                CAST({sumtotal} AS float) AS gewicht \
+         FROM PARHIT h \
+         OUTER APPLY ( \
+            SELECT TOP 1 zp.LEBID FROM ZPLAN zp \
+            WHERE LTRIM(RTRIM(zp.PATNR)) = LTRIM(RTRIM(h.PATNR)) \
+              AND LTRIM(RTRIM(zp.LFDPLAN)) = LTRIM(RTRIM(h.LFDPLAN)) \
+         ) zp \
+         WHERE h.DTADATUM <> '00000000' AND h.DTADATUM >= @P1"
+    );
+    out.extend(query_sammel_prorata(conn, cutoff, "0kp", "PAR", &fall).await?);
     Ok(out)
+}
+
+/// **ZE** (art=bema, gruppe=ZE): 2a Einzelrechnungen (FAKT RART 5060/6020, GKV) über
+/// BILL→ZPLAN(→LEBID); 2b Sammelrechnung `0kz` pro-rata auf ZEHIT-Pläne (Gewicht =
+/// Feld F4 = `SUBSTRING(ZE2,61,10)`).
+async fn query_revenue_ze(
+    conn: &mut Z1Connection,
+    m: &ColumnMap,
+    cutoff: &str,
+) -> Result<Vec<RevenueRow>> {
+    let mut out: Vec<RevenueRow> = Vec::new();
+
+    // 2a Einzel: FAKT ⋈ BILL(→LFDHPLAN) ⋈ ZPLAN(→LEBID) → Behandler.
+    let honorar = as_amount_str(&format!("SUM({})", sql_amount("f.[ZHON]")));
+    let behandler = behandler_expr("zp.LEBID");
+    let plan_join = PLAN_BEHANDLER_JOIN;
+    let sql_einzel = format!(
+        "SELECT SUBSTRING(ISNULL(f.[{fd}],''),1,6) AS YM, \
+                {behandler} AS BEHANDLER, \
+                {honorar} AS HONORAR, \
+                CAST(COUNT(*) AS int) AS N_LEIST, \
+                CAST(COUNT(DISTINCT LTRIM(RTRIM(f.[PATNR]))) AS int) AS N_FAELLE \
+         FROM FAKT f \
+         OUTER APPLY ( \
+            SELECT TOP 1 b.LFDHPLAN FROM BILL b \
+            WHERE LTRIM(RTRIM(b.PATNR)) = LTRIM(RTRIM(f.PATNR)) \
+              AND LTRIM(RTRIM(b.GLFDFAKT)) = LTRIM(RTRIM(f.LFDFAKT)) \
+         ) b \
+         OUTER APPLY ( \
+            SELECT TOP 1 zp.LEBID FROM ZPLAN zp \
+            WHERE LTRIM(RTRIM(zp.PATNR)) = LTRIM(RTRIM(f.PATNR)) \
+              AND LTRIM(RTRIM(zp.LFDPLAN)) = LTRIM(RTRIM(b.LFDHPLAN)) \
+         ) zp \
+         {plan_join} \
+         WHERE LTRIM(RTRIM(ISNULL(f.[RART],''))) IN ('5060','6020') \
+           AND LTRIM(RTRIM(ISNULL(f.[KTRAEGER],''))) = '1' \
+           AND LTRIM(RTRIM(ISNULL(f.[STORNIERT],''))) <> '1' \
+           AND f.[PATNR] NOT LIKE '%[^0-9 ]%' \
+           AND ISNULL(f.[{fd}],'') >= @P1 \
+         GROUP BY SUBSTRING(ISNULL(f.[{fd}],''),1,6), {behandler}",
+        fd = ident(&m.fakt_datum),
+    );
+    for r in &conn.rows(&sql_einzel, &[&cutoff]).await? {
+        let Some(period) = period_from_ym(&get_str(r, "YM")) else { continue };
+        out.push(RevenueRow {
+            period,
+            art: "bema".into(),
+            gruppe: Some("ZE".into()),
+            behandler: get_str(r, "BEHANDLER"),
+            standort: None,
+            honorar: round2(parse_amount(&get_str(r, "HONORAR"))),
+            eigenlabor: None,
+            fremdlabor: None,
+            n_leistungen: i64::from(r.get::<i32, _>("N_LEIST").unwrap_or(0)),
+            n_faelle: i64::from(r.get::<i32, _>("N_FAELLE").unwrap_or(0)),
+        });
+    }
+
+    // 2b Sammel 0kz pro-rata (Gewicht = ZEHIT Feld F4 = SUBSTRING(ZE2,61,10) €).
+    let f4 = sql_amount("SUBSTRING(h.ZE2,61,10)");
+    let fall = format!(
+        "SELECT SUBSTRING(h.DTADATUM,5,2)+'.'+LEFT(h.DTADATUM,4) AS periode, \
+                LTRIM(RTRIM(zp.LEBID)) AS LEBID_RAW, \
+                CAST({f4} AS float) AS gewicht \
+         FROM ZEHIT h \
+         OUTER APPLY ( \
+            SELECT TOP 1 zp.LEBID FROM ZPLAN zp \
+            WHERE LTRIM(RTRIM(zp.PATNR)) = LTRIM(RTRIM(h.PATNR)) \
+              AND LTRIM(RTRIM(zp.LFDPLAN)) = LTRIM(RTRIM(h.LFDPLAN)) \
+         ) zp \
+         WHERE h.DTADATUM <> '00000000' AND h.DTADATUM >= @P1"
+    );
+    out.extend(query_sammel_prorata(conn, cutoff, "0kz", "ZE", &fall).await?);
+    Ok(out)
+}
+
+/// **KBR** (art=bema, gruppe=KBR): läuft rechnungsseitig unter RART 5060, ist aber
+/// eine eigene Sparte. Nur Sammelrechnung `0kb` pro-rata auf KBRHIT-Pläne
+/// (Gewicht = KBRHIT.SUMTOTAL €).
+async fn query_revenue_kbr(
+    conn: &mut Z1Connection,
+    _m: &ColumnMap,
+    cutoff: &str,
+) -> Result<Vec<RevenueRow>> {
+    let sumtotal = sql_amount("h.SUMTOTAL");
+    let fall = format!(
+        "SELECT SUBSTRING(h.DTADATUM,5,2)+'.'+LEFT(h.DTADATUM,4) AS periode, \
+                LTRIM(RTRIM(zp.LEBID)) AS LEBID_RAW, \
+                CAST({sumtotal} AS float) AS gewicht \
+         FROM KBRHIT h \
+         OUTER APPLY ( \
+            SELECT TOP 1 zp.LEBID FROM ZPLAN zp \
+            WHERE LTRIM(RTRIM(zp.PATNR)) = LTRIM(RTRIM(h.PATNR)) \
+              AND LTRIM(RTRIM(zp.LFDPLAN)) = LTRIM(RTRIM(h.LFDPLAN)) \
+         ) zp \
+         WHERE h.DTADATUM <> '00000000' AND h.DTADATUM >= @P1"
+    );
+    query_sammel_prorata(conn, cutoff, "0kb", "KBR", &fall).await
 }
 
 /// Zahlungseingänge je Monat × Zahlart aus einer Quelle (`KONTO` oder `CASH`).
@@ -609,23 +943,60 @@ async fn sync_once(cfg: &ConnectorConfig, cloud: &CloudClient) -> Result<()> {
     let mut ar_aging: Vec<ArAgingRow> = Vec::new();
     let mut open_services: Vec<OpenServicesRow> = Vec::new();
 
-    // revenue: Privat/GOZ aus BEH (je Behandler×Art) + GKV aus FAKT (je Monat).
+    // revenue: Privat/GOZ (BEH) + GKV je Behandler nach Sparte (KCH/PAR/ZE/KBR).
+    // EINE Anforderungsliste über alle fünf Quellen — fehlt irgendeine benötigte
+    // (Tabelle,Spalte), kommt revenue KOMPLETT nach pending_mappings. Spaltennamen
+    // am ZMM (09.07.2026) per Schema-Discovery verifiziert.
     let req: Vec<(&str, &str)> = vec![
+        // Privat/GOZ + KCH (BEH ⋈ GO/PUNKTWERTE), Behandler über BEH.LEBID.
         ("BEH", &map.beh_datum),
         ("BEH", &map.beh_art),
         ("BEH", &map.beh_behandler),
         ("BEH", &map.beh_betrag),
         ("BEH", &map.beh_patnr),
+        ("BEH", "KYLSTNR"),
+        ("BEH", "ANZAHL"),
+        ("GO", "KYLSTNR"),
+        ("GO", "GEBPKT"),
+        ("GO", "ABDATUM"),
+        ("GO", "BISDATUM"),
+        ("GO", "PWLART"),
+        ("PUNKTWERTE", "PWLART"),
+        ("PUNKTWERTE", "PWWEST"),
+        ("PUNKTWERTE", "ABDATUM"),
         ("LEB", "LEBID"),
         ("LEB", "PID"),
         ("PERSONAL", "PID"),
         ("PERSONAL", "KUERZEL"),
+        // PAR/ZE/KBR: Einzel- + Sammelrechnungen, Behandler über den Plan (ZPLAN.LEBID).
         ("FAKT", &map.fakt_datum),
-        ("FAKT", &map.fakt_storno),
         ("FAKT", "ZHON"),
-        ("FAKT", "ELAB"),
-        ("FAKT", "FLAB"),
+        ("FAKT", "RART"),
         ("FAKT", "KTRAEGER"),
+        ("FAKT", "STORNIERT"),
+        ("FAKT", "LFDFAKT"),
+        ("FAKT", "LFDPATBILL"),
+        ("FAKT", "PATNR"),
+        ("FAKT", "BESCHREIBUNG"),
+        ("BILL", "PATNR"),
+        ("BILL", "GLFDFAKT"),
+        ("BILL", "LFDHPLAN"),
+        ("ZPLAN", "PATNR"),
+        ("ZPLAN", "LFDPLAN"),
+        ("ZPLAN", "LEBID"),
+        ("PARHIT", "PATNR"),
+        ("PARHIT", "LFDPATBILL"),
+        ("PARHIT", "LFDPLAN"),
+        ("PARHIT", "DTADATUM"),
+        ("PARHIT", "SUMTOTAL"),
+        ("KBRHIT", "PATNR"),
+        ("KBRHIT", "LFDPLAN"),
+        ("KBRHIT", "DTADATUM"),
+        ("KBRHIT", "SUMTOTAL"),
+        ("ZEHIT", "PATNR"),
+        ("ZEHIT", "LFDPLAN"),
+        ("ZEHIT", "DTADATUM"),
+        ("ZEHIT", "ZE2"),
     ];
     let missing = disc.missing(&req);
     if missing.is_empty() {
@@ -634,7 +1005,14 @@ async fn sync_once(cfg: &ConnectorConfig, cloud: &CloudClient) -> Result<()> {
     } else {
         pending.insert(
             "revenue".into(),
-            pending_entry(missing, &disc, &["BEH", "LEB", "PERSONAL", "FAKT"]),
+            pending_entry(
+                missing,
+                &disc,
+                &[
+                    "BEH", "GO", "PUNKTWERTE", "LEB", "PERSONAL", "FAKT", "BILL", "ZPLAN",
+                    "PARHIT", "KBRHIT", "ZEHIT",
+                ],
+            ),
         );
     }
 
@@ -877,6 +1255,18 @@ mod tests {
         assert_eq!(ymd_to_iso("20230704"), Some("2023-07-04".into()));
         assert_eq!(ymd_to_iso("00000000"), None);
         assert_eq!(ymd_to_iso(""), None);
+    }
+
+    #[test]
+    fn periode_aus_mm_jjjj() {
+        assert_eq!(period_from_mmjjjj("07.2026"), Some("2026-07-01".into()));
+        assert_eq!(period_from_mmjjjj(" 12.2025 "), Some("2025-12-01".into()));
+        assert_eq!(period_from_mmjjjj("13.2026"), None); // Monat 13
+        assert_eq!(period_from_mmjjjj("00.2026"), None); // Monat 0
+        assert_eq!(period_from_mmjjjj("7.2026"), None); // fehlendes Padding/Trenner
+        assert_eq!(period_from_mmjjjj("2026-07"), None); // falscher Trenner
+        assert_eq!(period_from_mmjjjj(""), None);
+        assert_eq!(period_from_mmjjjj("aa.bbbb"), None);
     }
 
     #[test]
