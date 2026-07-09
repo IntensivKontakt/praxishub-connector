@@ -38,6 +38,11 @@ interface ConnectorConfig {
   writeback_anamnese: boolean;
   writeback_new_patient: boolean;
   writeback_co_to_risk: boolean;
+  // Praxis-Steuerung: nächtlicher Umsatz-/Leistungs-Aggregat-Sync (opt-in)
+  z1_control_enabled: boolean;
+  z1_control_hour: number;
+  z1_control_months: number;
+  z1_control_column_map: Record<string, string> | null;
 }
 
 let cfg: ConnectorConfig = blankConfig();
@@ -67,6 +72,10 @@ function blankConfig(): ConnectorConfig {
     writeback_anamnese: false,
     writeback_new_patient: false,
     writeback_co_to_risk: false,
+    z1_control_enabled: false,
+    z1_control_hour: 3,
+    z1_control_months: 36,
+    z1_control_column_map: null,
   };
 }
 
@@ -221,7 +230,40 @@ function collectFromWizard(): ConnectorConfig {
     writeback_anamnese: hasEl("writeback_anamnese") ? checked("writeback_anamnese") : cfg.writeback_anamnese,
     writeback_new_patient: hasEl("writeback_new_patient") ? checked("writeback_new_patient") : cfg.writeback_new_patient,
     writeback_co_to_risk: hasEl("writeback_co_to_risk") ? checked("writeback_co_to_risk") : cfg.writeback_co_to_risk,
+    z1_control_enabled: hasEl("z1_control_enabled") ? checked("z1_control_enabled") : cfg.z1_control_enabled,
+    z1_control_hour: hasEl("z1_control_hour") ? clampInt(val("z1_control_hour"), 3, 0, 23) : cfg.z1_control_hour,
+    z1_control_months: hasEl("z1_control_months") ? clampInt(val("z1_control_months"), 36, 1, 120) : cfg.z1_control_months,
+    z1_control_column_map: hasEl("z1_control_column_map")
+      ? parseColumnMap(val("z1_control_column_map"))
+      : cfg.z1_control_column_map,
   };
+}
+
+function clampInt(raw: string, fallback: number, lo: number, hi: number): number {
+  const n = parseInt(raw || String(fallback), 10);
+  if (Number.isNaN(n)) return fallback;
+  return Math.min(hi, Math.max(lo, n));
+}
+
+/// Textarea → Spalten-Override-Objekt. Leer = null (Auto-Erkennung). Ungültiges
+/// JSON/kein Objekt wirft → saveFromDashboard fängt und meldet es (kein stiller Verlust).
+function parseColumnMap(text: string): Record<string, string> | null {
+  const t = text.trim();
+  if (!t) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(t);
+  } catch {
+    throw new Error("Spalten-Zuordnung ist kein gültiges JSON.");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("Spalten-Zuordnung muss ein JSON-Objekt sein.");
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof v === "string" && v.trim()) out[k] = v.trim();
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 function onApplyCode() {
@@ -370,6 +412,20 @@ function renderDashboard() {
       <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_co_to_risk" /> Bei „c/o"-Adresszusatz Hinweis in Risikoanamnese</label>
       <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_anamnese" /> Krankenanamnese (PATINFO)</label>
       <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_new_patient" /> Neupatient anlegen <span class="hint">(Vorsicht: Dubletten-Risiko beim Kartenstecken)</span></label>
+
+      <h3 style="margin-top:20px">Praxis-Steuerung (Umsatz- &amp; Leistungs-Sync)</h3>
+      <p class="sub" style="margin-bottom:10px">Liest einmal täglich aggregierte Umsatz-/Abrechnungsdaten (read-only) und speist das Modul „Praxis-Steuerung" in Praxishub. Nur Aggregate, keine Klartext-Patientendaten. War der PC nachts aus, wird der Lauf morgens nachgeholt.</p>
+      <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="z1_control_enabled" /> Umsatz-/Leistungs-Sync aktivieren</label>
+      <div class="row">
+        <div class="field"><label>Früheste Stunde (0–23, Standard 3)</label><input id="z1_control_hour" placeholder="3" /></div>
+        <div class="field"><label>Monats-Aggregate: Zeitfenster (Monate)</label><input id="z1_control_months" placeholder="36" /></div>
+      </div>
+      <details class="collapsible" style="margin-top:8px">
+        <summary>Spalten-Zuordnung (nur falls die automatische Erkennung Felder offen lässt)</summary>
+        <p class="hint" style="margin-top:10px">JSON-Objekt: logischer Schlüssel → echter Z1-Spaltenname. Leer lassen für automatische Erkennung. Beispiel: <code>{"beh_datum":"LEISTDATUM","beh_art":"ABRECHNUNGSART"}</code></p>
+        <textarea id="z1_control_column_map" rows="5" style="width:100%;font-family:monospace;font-size:12px" placeholder='{ "beh_datum": "...", "beh_art": "..." }'></textarea>
+      </details>
+
       <div class="actions"><button class="primary" id="save2">Speichern</button></div>
     </section>
 
@@ -435,6 +491,10 @@ function applyConfig(c: ConnectorConfig) {
   setChecked("writeback_anamnese", c.writeback_anamnese);
   setChecked("writeback_new_patient", c.writeback_new_patient);
   setChecked("writeback_co_to_risk", c.writeback_co_to_risk);
+  setChecked("z1_control_enabled", c.z1_control_enabled ?? false);
+  setIf("z1_control_hour", String(c.z1_control_hour ?? 3));
+  setIf("z1_control_months", String(c.z1_control_months ?? 36));
+  setIf("z1_control_column_map", c.z1_control_column_map ? JSON.stringify(c.z1_control_column_map, null, 2) : "");
 }
 
 async function onTestZ1() {
@@ -473,7 +533,12 @@ async function onBootstrapRo() {
 }
 
 async function saveFromDashboard() {
-  cfg = collectFromWizard();
+  try {
+    cfg = collectFromWizard();
+  } catch (e) {
+    toast(`Nicht gespeichert: ${(e as Error).message}`);
+    return;
+  }
   const ok = await call("save_config", { config: cfg });
   if (ok !== null) {
     toast("Gespeichert.");
