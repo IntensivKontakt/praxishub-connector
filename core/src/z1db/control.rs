@@ -57,12 +57,16 @@ fn ident(s: &str) -> String {
         .collect()
 }
 
-/// SQL-Ausdruck, der einen varchar-Betrag robust nach `float` wandelt — sowohl
-/// deutsche Komma-Notation (`1.234,56`) als auch Punkt-Notation (`1234.56`).
+/// SQL-Ausdruck, der einen Z1-Betrag nach EUR wandelt. **Z1-Betragsformat
+/// (am ZMM verifiziert):** Präfix (Buchstabe oder Leerzeichen) + Ziffern = Betrag
+/// in **Cent**, KEIN Dezimaltrenner — z. B. `"e 6426"` → 6426 Cent → 64,26 €.
+/// Deshalb: Präfix strippen (führendes Nicht-Ziffern-Zeichen), Leerzeichen raus,
+/// verbleibende Ziffern als `bigint` (= Cent) lesen, `/ 100`. Leer → NULL → 0.
 fn sql_amount(expr: &str) -> String {
     format!(
-        "ISNULL(TRY_CAST(CASE WHEN {e} LIKE '%,%' \
-             THEN REPLACE(REPLACE({e}, '.', ''), ',', '.') ELSE {e} END AS float), 0)",
+        "(ISNULL(CAST(NULLIF(REPLACE(\
+             CASE WHEN LEFT(LTRIM({e}),1) LIKE '[0-9]' THEN LTRIM(RTRIM({e})) \
+                  ELSE SUBSTRING(LTRIM({e}),2,LEN({e})) END,' ',''),'') AS bigint), 0) / 100.0)",
         e = expr
     )
 }
@@ -348,32 +352,29 @@ async fn count_beh_since(conn: &mut Z1Connection, m: &ColumnMap, cutoff: &str) -
     Ok(row.and_then(|r| r.get::<i64, _>(0)).unwrap_or(0))
 }
 
-/// Honorar je Monat × Art × Behandler aus `BEH ⋈ LBLOCKENTRY`.
+/// Umsatz (Einnahmen) je Monat aus `CASH` — die belastbare Betragsquelle (100 %
+/// befüllt). `BEH` hat KEIN Honorarfeld (DMBETRAG nur GOZ ~33 %), daher kommt der
+/// Umsatz cash-basis aus den Zahlungseingängen. Stornos ausgeschlossen. Ohne
+/// Behandler-/Abrechnungsart-Dimension (kennt CASH nicht) — die per-Behandler-/
+/// BEMA-GOZ-Aufschlüsselung braucht Rechnungsmodellierung (BILL/FAKT, Folgeschritt).
 async fn query_revenue(
     conn: &mut Z1Connection,
     m: &ColumnMap,
     cutoff: &str,
 ) -> Result<Vec<RevenueRow>> {
-    // Umsatz aus BEH ALLEIN (erbrachte Leistungen mit eigenem Betrag DMBETRAG) —
-    // KEIN Join zu LBLOCKENTRY mehr (der frühere LFDLBLOCK-Join war ein Kreuzprodukt
-    // über 1,46 Mio. Zeilen → Timeout). Gruppierung je Monat × Art × Behandler.
-    let honorar = as_amount_str(&format!("SUM({})", sql_amount(&format!("b.[{}]", ident(&m.beh_betrag)))));
+    let honorar = as_amount_str(&format!("SUM({})", sql_amount(&format!("[{}]", ident(&m.cash_betrag)))));
     let sql = format!(
-        "SELECT SUBSTRING(ISNULL(b.[{d}],''),1,6) AS YM, \
-                LTRIM(RTRIM(ISNULL(b.[{a}],''))) AS ART, \
-                LTRIM(RTRIM(ISNULL(b.[{beh}],''))) AS BEHANDLER, \
+        "SELECT SUBSTRING(ISNULL([{d}],''),1,6) AS YM, \
                 {honorar} AS HONORAR, \
                 CAST(COUNT(*) AS int) AS N_LEIST, \
-                CAST(COUNT(DISTINCT LTRIM(RTRIM(b.[{p}]))) AS int) AS N_FAELLE \
-         FROM BEH b \
-         WHERE ISNULL(b.[{d}],'') >= @P1 \
-         GROUP BY SUBSTRING(ISNULL(b.[{d}],''),1,6), \
-                  LTRIM(RTRIM(ISNULL(b.[{a}],''))), \
-                  LTRIM(RTRIM(ISNULL(b.[{beh}],'')))",
-        d = ident(&m.beh_datum),
-        a = ident(&m.beh_art),
-        beh = ident(&m.beh_behandler),
-        p = ident(&m.beh_patnr),
+                CAST(COUNT(DISTINCT LTRIM(RTRIM([{p}]))) AS int) AS N_FAELLE \
+         FROM CASH \
+         WHERE ISNULL([{d}],'') >= @P1 \
+           AND LTRIM(RTRIM(ISNULL([{s}],''))) IN ('', '0') \
+         GROUP BY SUBSTRING(ISNULL([{d}],''),1,6)",
+        d = ident(&m.cash_datum),
+        p = ident(&m.beh_patnr), // PATNR existiert in CASH ebenfalls
+        s = ident(&m.cash_storno),
     );
     let rows = conn.rows(&sql, &[&cutoff]).await?;
     let mut out = Vec::new();
@@ -383,12 +384,12 @@ async fn query_revenue(
         };
         out.push(RevenueRow {
             period,
-            art: map_art(&get_str(r, "ART")),
-            gruppe: None,   // keine belastbare Gruppen-Spalte bekannt → null
-            behandler: get_str(r, "BEHANDLER"),
-            standort: None, // Z1-Einzelstandort; Spalte unbekannt → null
+            art: String::new(),      // CASH kennt keine BEMA/GOZ-Art
+            gruppe: None,
+            behandler: String::new(), // CASH kennt keinen Behandler
+            standort: None,
             honorar: round2(parse_amount(&get_str(r, "HONORAR"))),
-            eigenlabor: None, // Labor-Spalten unbekannt → null (nicht 0 erfinden)
+            eigenlabor: None,
             fremdlabor: None,
             n_leistungen: i64::from(r.get::<i32, _>("N_LEIST").unwrap_or(0)),
             n_faelle: i64::from(r.get::<i32, _>("N_FAELLE").unwrap_or(0)),
@@ -548,20 +549,19 @@ async fn sync_once(cfg: &ConnectorConfig, cloud: &CloudClient) -> Result<()> {
     let mut ar_aging: Vec<ArAgingRow> = Vec::new();
     let mut open_services: Vec<OpenServicesRow> = Vec::new();
 
-    // revenue: BEH allein (Betrag = DMBETRAG).
+    // revenue: CASH allein (Einnahmen; BEH hat kein Honorarfeld).
     let req: Vec<(&str, &str)> = vec![
-        ("BEH", &map.beh_patnr),
-        ("BEH", &map.beh_datum),
-        ("BEH", &map.beh_art),
-        ("BEH", &map.beh_behandler),
-        ("BEH", &map.beh_betrag),
+        ("CASH", &map.cash_datum),
+        ("CASH", &map.cash_betrag),
+        ("CASH", &map.cash_storno),
+        ("CASH", &map.beh_patnr), // PATNR ist auch in CASH (Fallzählung)
     ];
     let missing = disc.missing(&req);
     if missing.is_empty() {
         rows_scanned += count_beh_since(&mut conn, &map, &cutoff).await.unwrap_or(0);
         revenue = query_revenue(&mut conn, &map, &cutoff).await?;
     } else {
-        pending.insert("revenue".into(), pending_entry(missing, &disc, &["BEH"]));
+        pending.insert("revenue".into(), pending_entry(missing, &disc, &["CASH"]));
     }
 
     // payments: CASH allein (KONTO ist der Kontenrahmen, keine Zahlungsquelle).
@@ -954,10 +954,22 @@ mod tests {
 
     #[test]
     fn sql_amount_und_ident_haertung() {
-        let e = sql_amount("e.[BETRAG]");
-        assert!(e.contains("TRY_CAST"));
-        assert!(e.contains("LIKE '%,%'"));
+        // Cent-Transform: bigint der Ziffern / 100, Präfix + Leerzeichen entfernt.
+        let e = sql_amount("[BETRAG]");
+        assert!(e.contains("bigint"), "{e}");
+        assert!(e.contains("/ 100.0"), "{e}");
+        assert!(e.contains("SUBSTRING"), "{e}");
         assert_eq!(ident("EINZELBETRAG"), "EINZELBETRAG");
         assert_eq!(ident("X]; DROP TABLE PAT;--"), "XDROPTABLEPAT");
+    }
+
+    #[test]
+    fn parse_amount_liest_dezimal_string() {
+        // as_amount_str liefert SQL-seitig einen Dezimal-String ("64.26"); Rust parst ihn.
+        assert_eq!(parse_amount("64.26"), 64.26);
+        assert_eq!(parse_amount("1234.56"), 1234.56);
+        assert_eq!(parse_amount("0.00"), 0.0);
+        assert_eq!(parse_amount(""), 0.0);
+        assert_eq!(parse_amount("-12.50"), -12.5);
     }
 }
