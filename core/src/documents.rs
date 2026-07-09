@@ -224,7 +224,11 @@ async fn file_one(
         }
     }
 
-    if patient_id.is_empty() {
+    // Weg A (PraxisArchiv-COM-Sidecar) nur, wenn KEINE Z1-DB konfiguriert ist —
+    // die Z1-`PAT`-Query oben löst dasselbe robuster und ohne 32-bit-PowerShell-
+    // Prozess (der sonst bei jedem Poll ein Konsolenfenster aufblitzen ließe).
+    // Siehe docs/Z1-DATABASE.md §4 „Ablösung Weg A".
+    if patient_id.is_empty() && !cfg.z1db_read_ready() {
         // Der Lookup startet einen kurzlebigen 32-bit-PowerShell-Prozess (COM) und
         // ist damit blockierend → aus dem async-Kontext auslagern.
         let (l, f, d, z) = (

@@ -73,7 +73,12 @@ pub fn resolve_patient_id(last: &str, first: &str, dob: &str, zip: &str) -> Pati
 #[cfg(windows)]
 fn run_lookup(last: &str, first: &str, dob_de: &str, zip: &str) -> PatientLookup {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use std::os::windows::process::CommandExt;
     use std::process::Command;
+
+    // Kein aufblitzendes Konsolenfenster: der Sidecar läuft bei jedem Poll und
+    // würde sonst sichtbar poppen. CREATE_NO_WINDOW startet ihn unsichtbar.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     // `-EncodedCommand` erwartet UTF-16LE-Base64. Das umgeht zugleich die
     // ExecutionPolicy (kein Skript-Datei-Aufruf) — wichtig in verwalteten
@@ -90,6 +95,7 @@ fn run_lookup(last: &str, first: &str, dob_de: &str, zip: &str) -> PatientLookup
 
     let output = Command::new(&powershell)
         .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
+        .creation_flags(CREATE_NO_WINDOW)
         // Eingaben über die Umgebung (nicht die Kommandozeile) → kein Leak in die
         // Prozessliste; das Skript escaped sie zusätzlich fürs SQL.
         .env("PA_LAST", last)
