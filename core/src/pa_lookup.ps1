@@ -109,6 +109,18 @@ try {
 
     $c = [PaLookup]::Count("SELECT COUNT(*) FROM AG1_MasterData WHERE $base")
     if ($c -lt 0) { Emit @{ status = 'error'; message = 'COUNT-Query fehlgeschlagen' }; return }
+
+    # Zweiter Vorname im Formular („Galip Martin"), Stammdaten nur Rufname
+    # („Galip") → exakter Vergleich findet nichts. Mit dem ERSTEN Vornamens-
+    # Token erneut versuchen (weiterhin exakt + Nachname + Geburtsdatum).
+    if ($c -eq 0 -and $first -match '\s') {
+        $firstTok = Q (($env:PA_FIRST.Trim() -split '\s+')[0])
+        if ($firstTok -ne '') {
+            $base = "Name='$last' AND Geburtsdatum='$dob' AND Vorname='$firstTok'"
+            $c = [PaLookup]::Count("SELECT COUNT(*) FROM AG1_MasterData WHERE $base")
+            if ($c -lt 0) { Emit @{ status = 'error'; message = 'COUNT-Query fehlgeschlagen' }; return }
+        }
+    }
     if ($c -eq 0) { Emit @{ status = 'none' }; return }
 
     # Mehrere Treffer → per Postleitzahl eingrenzen (Tiebreaker). Schlägt die

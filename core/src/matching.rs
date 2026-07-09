@@ -273,11 +273,24 @@ pub fn confidence(w: &PatientKey, w_zip: Option<&str>, c: &PatientKey, c_zip: Op
         _ => 0,
     };
     if !w.first_name.is_empty() && !c.first_name.is_empty() {
-        s += match fd {
-            0 => 25,
-            1 => 17,
-            2 => 8,
-            _ => 0,
+        // Präfix-Fall: Formular trägt den zweiten Vornamen („Galip Martin"),
+        // die Stammdaten nur den Rufnamen („Galip") — nach Normalisierung ist
+        // eine Seite Präfix der anderen. Fast so stark wie exakt; der
+        // MIN_LEAD-Vorsprung schützt weiterhin vor echten Zwillingen.
+        let prefix = w.first_name.len() >= 3
+            && c.first_name.len() >= 3
+            && (w.first_name.starts_with(&c.first_name)
+                || c.first_name.starts_with(&w.first_name));
+        s += if fd == 0 {
+            25
+        } else if prefix {
+            20
+        } else {
+            match fd {
+                1 => 17,
+                2 => 8,
+                _ => 0,
+            }
         };
     }
     if dob_eq {
@@ -533,6 +546,27 @@ mod tests {
         // Geburtsdatum daneben, keine PLZ-Bestätigung → nicht sicher genug → Review.
         let w = PatientKey::new("Groth", "Nikolas", "23.02.2001");
         let c = vec![cand("Groth", "Nikolas", "23.02.2011", None, None, "16006")];
+        assert!(matches!(resolve_fuzzy(&w, None, &c), Resolution::Review(_)));
+    }
+
+    #[test]
+    fn fuzzy_zweiter_vorname_wird_gematcht() {
+        // Formular „Galip Martin", Z1 nur Rufname „Galip", Geburtsdatum exakt →
+        // Präfix-Match, Auto-Zuordnung (der reale Fall PATNR 18378).
+        let w = PatientKey::new("Kiris", "Galip Martin", "17.02.2002");
+        let c = vec![cand("Kiris", "Galip", "20020217", None, None, "18378")];
+        assert_eq!(resolve_fuzzy(&w, None, &c), Resolution::Matched("18378".to_string()));
+    }
+
+    #[test]
+    fn fuzzy_praefix_zwilling_geht_ins_review() {
+        // „Anna" gesucht, Kandidaten „Anna" (exakt) UND „Annalena" (Präfix),
+        // gleiches Geburtsdatum → Vorsprung < MIN_LEAD → Review, nicht raten.
+        let w = PatientKey::new("Groth", "Anna", "23.02.2001");
+        let c = vec![
+            cand("Groth", "Anna", "23.02.2001", None, None, "1"),
+            cand("Groth", "Annalena", "23.02.2001", None, None, "2"),
+        ];
         assert!(matches!(resolve_fuzzy(&w, None, &c), Resolution::Review(_)));
     }
 

@@ -88,7 +88,7 @@ pub async fn file_pending(cfg: &ConnectorConfig) -> Result<(usize, usize)> {
     let docs = cloud.fetch_pending_documents().await?;
     let (mut filed, mut deferred) = (0usize, 0usize);
     for doc in docs {
-        match file_one(&import_program, &exchange_dir, &cloud, &doc, None).await {
+        match file_one(cfg, &import_program, &exchange_dir, &cloud, &doc, None).await {
             Ok(FilingOutcome::Filed { .. }) => filed += 1,
             Ok(FilingOutcome::Deferred(reason)) => {
                 // Offen lassen (Variante A legt es ab, sobald Z1 den Patienten öffnet);
@@ -134,7 +134,7 @@ pub async fn file_pending_for_patient(
         } else {
             None
         };
-        match file_one(&import_program, &exchange_dir, &cloud, &doc, patid).await {
+        match file_one(cfg, &import_program, &exchange_dir, &cloud, &doc, patid).await {
             Ok(FilingOutcome::Filed { .. }) => filed += 1,
             Ok(FilingOutcome::Deferred(reason)) => {
                 debug!(id = %doc.id, %reason, "Variante A: weiterhin offen")
@@ -151,6 +151,7 @@ pub async fn file_pending_for_patient(
 /// Legt genau ein Dokument ab und quittiert bei Erfolg ans Backend.
 /// `patid_override` überschreibt die (ggf. fehlende) Backend-PATID — für Variante A.
 async fn file_one(
+    cfg: &ConnectorConfig,
     import_program: &Path,
     exchange_dir: &Path,
     cloud: &CloudClient,
@@ -181,6 +182,48 @@ async fn file_one(
         .unwrap_or_else(|| doc.patient_id.trim().to_string());
 
     let mut matched_via_lookup = false;
+
+    // Bevorzugt: Z1-DB-Fuzzy-Auflösung (Name+Geburtsdatum+PLZ direkt gegen PAT,
+    // toleriert zweite Vornamen/Tippfehler — siehe crate::matching). Bei
+    // Unsicherheit (Review) wird bewusst NICHT abgelegt (Variante A/Team folgt).
+    if patient_id.is_empty() && cfg.z1db_read_ready() {
+        let zip = Some(doc.zip.trim()).filter(|s| !s.is_empty());
+        match crate::z1db::connect(
+            &cfg.z1_db_server,
+            &cfg.z1_db_database,
+            &cfg.z1_db_user,
+            &cfg.z1_db_password,
+            cfg.z1_db_trust_cert,
+        )
+        .await
+        {
+            Ok(mut conn) => match crate::z1db::resolve_patient(
+                &mut conn,
+                &doc.last_name,
+                &doc.first_name,
+                &doc.birth_date,
+                zip,
+            )
+            .await
+            {
+                Ok(crate::matching::Resolution::Matched(patnr)) => {
+                    info!(id = %doc.id, patid = %patnr, "PatientenID über Z1-DB aufgelöst");
+                    patient_id = patnr;
+                    matched_via_lookup = true;
+                }
+                Ok(crate::matching::Resolution::Review(cands)) => {
+                    warn!(id = %doc.id, kandidaten = cands.len(),
+                        "Z1-Lookup unsicher/mehrdeutig — nicht abgelegt (Variante A/Team)");
+                }
+                Ok(crate::matching::Resolution::NotFound) => {
+                    debug!(id = %doc.id, "Z1-Lookup: Patient (noch) nicht in Z1 — Weg A versucht es");
+                }
+                Err(e) => debug!(id = %doc.id, error = %e, "Z1-Lookup fehlgeschlagen — Weg A versucht es"),
+            },
+            Err(e) => debug!(id = %doc.id, error = %e, "Z1-DB nicht erreichbar — Weg A versucht es"),
+        }
+    }
+
     if patient_id.is_empty() {
         // Der Lookup startet einen kurzlebigen 32-bit-PowerShell-Prozess (COM) und
         // ist damit blockierend → aus dem async-Kontext auslagern.
