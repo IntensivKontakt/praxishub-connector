@@ -16,4 +16,10 @@ pub struct AppState {
     pub hkp_poller: Mutex<Option<LoopHandle>>,
     /// Z1-Writeback-Schleife (Cloud → Z1). None = gestoppt.
     pub writeback_loop: Mutex<Option<LoopHandle>>,
+    /// Eigenständiger Heartbeat (KIM-unabhängig). None = gestoppt.
+    pub heartbeat_loop: Mutex<Option<LoopHandle>>,
+    /// Z1-PATID-Nachmatch-Schleife. None = gestoppt.
+    pub patient_match_loop: Mutex<Option<LoopHandle>>,
+    /// Praxis-Steuerungs-Sync (nächtliche Z1-Aggregate → Cloud). None = gestoppt.
+    pub control_loop: Mutex<Option<LoopHandle>>,
 }

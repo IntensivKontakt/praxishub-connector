@@ -8,8 +8,30 @@
 
 use crate::config::ConnectorConfig;
 use crate::error::{ConnectorError, Result};
+use crate::z1db::WritebackReport;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+
+/// Body des `applied`-Acks inkl. optionalem Schreib-Report — die Cloud macht damit
+/// sichtbar, ob z. B. die Risikoanamnese (CAVE) wirklich geschrieben oder
+/// übersprungen wurde. Alle Report-Felder werden weggelassen, wenn kein Report vorliegt.
+#[derive(Debug, Serialize)]
+struct WritebackAppliedBody<'a> {
+    patient_id: &'a str,
+    matched_by: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    contact_updated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    address_updated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cave_appended: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    co_appended: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    anamnese_inserted: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skipped: Vec<String>,
+}
 
 #[derive(Clone)]
 pub struct CloudClient {
@@ -206,6 +228,86 @@ pub struct HkpSubmission {
     pub result: Option<String>,
 }
 
+/// Nächtlicher Aggregat-Report fürs Modul „Praxis-Steuerung" (Controlling aus
+/// der Z1-DB). Erstellt in [`crate::z1db::control`]; die Cloud upsertet die
+/// Aggregate und speichert `sync.schema` + `sync.pending_mappings` (Grundlage
+/// für die Spalten-Zuordnung am Piloten).
+///
+/// **Backend-Vertrag:** `POST /api/v1/connector/z1/control-report`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ControlReport {
+    pub sync: ControlSync,
+    pub revenue: Vec<RevenueRow>,
+    pub payments: Vec<PaymentRow>,
+    pub ar_aging: Vec<ArAgingRow>,
+    pub open_services: Vec<OpenServicesRow>,
+}
+
+/// Sync-Metadaten des Control-Reports.
+#[derive(Debug, Clone, Serialize)]
+pub struct ControlSync {
+    /// Datenstand (ISO-Datum des Laufs).
+    pub watermark: String,
+    /// `ok` | `partial` (einzelne Teile ausgelassen) | `pending_mapping` (alle).
+    pub status: String,
+    /// Gescannte BEH-Quellzeilen im Zeitfenster (0, solange Mapping fehlt).
+    pub rows_scanned: i64,
+    /// Schema-Discovery `{tabelle: [spalten…]}` (INFORMATION_SCHEMA).
+    pub schema: serde_json::Value,
+    /// Ausgelassene Report-Teile: `{teil: {missing: [...], available: [...]}}`.
+    pub pending_mappings: serde_json::Value,
+}
+
+/// Honorar je Monat × Art × Behandler (aus `BEH ⋈ LBLOCKENTRY`).
+/// `gruppe`/`standort`/`eigenlabor`/`fremdlabor` sind `null`, bis die
+/// entsprechenden Z1-Spalten am Piloten gemappt sind (nie erfinden).
+#[derive(Debug, Clone, Serialize)]
+pub struct RevenueRow {
+    /// Monatserster als ISO-Datum, z. B. `"2026-07-01"`.
+    pub period: String,
+    /// `bema` | `goz` | `privat` (unbekannte Z1-Rohwerte kleingeschrieben durchgereicht).
+    pub art: String,
+    pub gruppe: Option<String>,
+    pub behandler: String,
+    pub standort: Option<String>,
+    pub honorar: f64,
+    pub eigenlabor: Option<f64>,
+    pub fremdlabor: Option<f64>,
+    pub n_leistungen: i64,
+    pub n_faelle: i64,
+}
+
+/// Zahlungseingänge je Monat × Zahlart (aus `KONTO`/`CASH`).
+#[derive(Debug, Clone, Serialize)]
+pub struct PaymentRow {
+    pub period: String,
+    pub art: String,
+    pub eingang: f64,
+    pub n: i64,
+}
+
+/// Offene Forderungen je Alters-Bucket (`FAKT` − `KONTO`), Stichtags-Snapshot.
+#[derive(Debug, Clone, Serialize)]
+pub struct ArAgingRow {
+    /// ISO-Datum des Snapshots, z. B. `"2026-07-08"`.
+    pub snapshot_date: String,
+    /// `0-30` | `31-60` | `61-90` | `90+` (| `unbekannt` bei unlesbarem Datum).
+    pub bucket: String,
+    pub offen: f64,
+    pub n: i64,
+}
+
+/// Erbrachte, nicht abgerechnete Leistungen je Behandler (`BEH` ohne `BILL`).
+#[derive(Debug, Clone, Serialize)]
+pub struct OpenServicesRow {
+    pub snapshot_date: String,
+    pub behandler: String,
+    pub offen_betrag: f64,
+    pub n: i64,
+    /// Ältestes Leistungsdatum (ISO), sofern lesbar.
+    pub oldest: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct FiledBody<'a> {
     patient_id: &'a str,
@@ -229,8 +331,37 @@ struct Heartbeat<'a> {
     version: &'a str,
     vdds_registered: bool,
     kim_watching: bool,
+    hkp_db_watching: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_error: Option<&'a str>,
+}
+
+/// Ein Cloud-Patient ohne Z1-PATID (aus `GET /connector/z1/patients/unmatched`),
+/// den der Connector gegen die Z1-`PAT`-Tabelle matcht. Felder Z1-normalisiert.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UnmatchedPatient {
+    pub cloud_id: String,
+    #[serde(default)]
+    pub last_name: String,
+    #[serde(default)]
+    pub first_name: String,
+    #[serde(default)]
+    pub birth_name: String,
+    #[serde(default)]
+    pub birth_date: String,   // 'JJJJMMTT'
+    #[serde(default)]
+    pub postal_code: String,
+    #[serde(default)]
+    pub email: String,
+}
+
+/// Ein in Z1 gefundener Treffer, den der Connector zurückmeldet
+/// (`POST /connector/z1/patients/matched`).
+#[derive(Debug, Clone, Serialize)]
+pub struct PatientMatch {
+    pub cloud_id: String,
+    pub patient_id: String,   // gefundene Z1-PATID
+    pub matched_by: String,   // "name_dob" | "name_dob_plz"
 }
 
 impl CloudClient {
@@ -275,12 +406,14 @@ impl CloudClient {
         &self,
         vdds_registered: bool,
         kim_watching: bool,
+        hkp_db_watching: bool,
         last_error: Option<&str>,
     ) -> Result<()> {
         let body = Heartbeat {
             version: env!("CARGO_PKG_VERSION"),
             vdds_registered,
             kim_watching,
+            hkp_db_watching,
             last_error,
         };
         self.auth(self.http.post(self.url("heartbeat")))
@@ -319,6 +452,48 @@ impl CloudClient {
         Ok(())
     }
 
+    /// Meldet den nächtlichen Aggregat-Report der Praxis-Steuerung.
+    /// **Backend-Vertrag:** `POST /api/v1/connector/z1/control-report`.
+    pub async fn report_control(&self, report: &ControlReport) -> Result<()> {
+        self.auth(self.http.post(self.url("z1/control-report")))
+            .json(report)
+            .send()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| ConnectorError::Http(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Cloud-Patienten ohne Z1-PATID zum Nachmatchen (seitenweise über `limit`).
+    pub async fn fetch_unmatched_patients(&self, limit: u32) -> Result<Vec<UnmatchedPatient>> {
+        let url = format!("{}?limit={}", self.url("z1/patients/unmatched"), limit);
+        self.auth(self.http.get(url))
+            .send()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| ConnectorError::Http(e.to_string()))?
+            .json::<Vec<UnmatchedPatient>>()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))
+    }
+
+    /// Meldet in Z1 gefundene PATIDs zurück (Bulk). Backend ergänzt nur leere Nummern.
+    pub async fn report_patient_matches(&self, matches: &[PatientMatch]) -> Result<()> {
+        if matches.is_empty() {
+            return Ok(());
+        }
+        self.auth(self.http.post(self.url("z1/patients/matched")))
+            .json(matches)
+            .send()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| ConnectorError::Http(e.to_string()))?;
+        Ok(())
+    }
+
     /// Holt anstehende Rückschreib-Bündel (digitale Aufnahme → Z1).
     /// **Backend-Vertrag offen:** `GET /api/v1/connector/z1/writeback/pending`.
     pub async fn fetch_pending_writebacks(&self) -> Result<Vec<PendingWriteback>> {
@@ -336,12 +511,27 @@ impl CloudClient {
 
     /// Quittiert ein erfolgreich in Z1 zurückgeschriebenes Bündel.
     /// **Backend-Vertrag offen:** `POST /api/v1/connector/z1/writeback/{id}/applied`.
-    pub async fn ack_writeback_applied(&self, id: &str, patient_id: &str) -> Result<()> {
+    pub async fn ack_writeback_applied(
+        &self,
+        id: &str,
+        patient_id: &str,
+        report: Option<&WritebackReport>,
+    ) -> Result<()> {
+        let body = WritebackAppliedBody {
+            patient_id,
+            matched_by: "z1db",
+            contact_updated: report.map(|r| r.contact_updated),
+            address_updated: report.map(|r| r.address_updated),
+            cave_appended: report.map(|r| r.cave_appended),
+            co_appended: report.map(|r| r.co_appended),
+            anamnese_inserted: report.map(|r| r.anamnese_inserted),
+            skipped: report.map(|r| r.skipped.clone()).unwrap_or_default(),
+        };
         self.auth(
             self.http
                 .post(self.url(&format!("z1/writeback/{id}/applied"))),
         )
-        .json(&FiledBody { patient_id, matched_by: "z1db" })
+        .json(&body)
         .send()
         .await
         .map_err(|e| ConnectorError::Http(e.to_string()))?
