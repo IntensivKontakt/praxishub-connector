@@ -481,9 +481,10 @@ async fn query_revenue_kch(
     cutoff: &str,
 ) -> Result<Vec<RevenueRow>> {
     let today = chrono::Local::now().format("%Y%m%d").to_string();
-    // Punktwert (€/Punkt) = euro(PWWEST)/10000 (PWWEST = Cent × 100). Aktuellster je
-    // PWLART: Zeilen mit ABDATUM ≤ heute, davon AVG (i. d. R. genau eine gültige Zeile).
-    let pw_euro = sql_amount("PWWEST");
+    // Punktwert (€/Punkt) = Rohziffern(PWWEST) ÷ 10000 — SONDERFORMAT, NICHT das
+    // 'e'+Cent-/100-Format (docs/Z1-BILLING.md §1). Nur der JÜNGSTE Punktwert je
+    // PWLART (ABDATUM = MAX(ABDATUM ≤ heute)); AVG mittelt die Kassen dieser Periode.
+    let pw_raw = "CAST(NULLIF(REPLACE(REPLACE(p.PWWEST,'e',''),' ',''),'') AS float)";
     let behandler = behandler_expr(&format!("b.[{}]", ident(&m.beh_behandler)));
     let beh_join = BEHANDLER_JOIN.replace("{leb}", &ident(&m.beh_behandler));
     // GEBPKT/100 (Gebührenpunkte) × ANZAHL/100 × Punktwert(€). GEBPKT/ANZAHL sind
@@ -496,11 +497,14 @@ async fn query_revenue_kch(
     let honorar = as_amount_str(&honorar_f);
     let sql = format!(
         "WITH pw AS ( \
-            SELECT LTRIM(RTRIM(PWLART)) AS PWLART, \
-                   AVG(({pw_euro})/10000.0) AS pwert \
-            FROM PUNKTWERTE \
-            WHERE LTRIM(RTRIM(ISNULL(ABDATUM,''))) <> '' AND ABDATUM <= '{today}' \
-            GROUP BY LTRIM(RTRIM(PWLART)) \
+            SELECT LTRIM(RTRIM(p.PWLART)) AS PWLART, \
+                   AVG(({pw_raw}) / 10000.0) AS pwert \
+            FROM PUNKTWERTE p \
+            WHERE p.ABDATUM = (SELECT MAX(p2.ABDATUM) FROM PUNKTWERTE p2 \
+                               WHERE LTRIM(RTRIM(p2.PWLART)) = LTRIM(RTRIM(p.PWLART)) \
+                                 AND p2.ABDATUM <= '{today}') \
+              AND LTRIM(RTRIM(ISNULL(p.PWWEST,''))) <> '' \
+            GROUP BY LTRIM(RTRIM(p.PWLART)) \
         ) \
         SELECT SUBSTRING(ISNULL(b.[{d}],''),1,6) AS YM, \
                {behandler} AS BEHANDLER, \

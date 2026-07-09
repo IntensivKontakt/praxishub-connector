@@ -97,3 +97,25 @@ Login `praxishub_ro` (`db_datareader`), Server `srv-fs\z1`, DB `Z1`,
 `Encrypt=True;TrustServerCertificate=True`. Passwort DPAPI-verschlüsselt in
 `%APPDATA%\praxishub\connector\config\config.json` (`z1_db_password`, Präfix `dpapi:` +
 Base64, `CryptUnprotectData` als der Windows-User).
+
+## 7. GKV je Behandler — die vier Sparten (reconciled 2026)
+
+Der GKV-Honorarumsatz je Behandler = Summe aus vier Sparten, alle faktura-verankert
+und am ZMM gegen `FAKT.ZHON` reconciled. Behandler IMMER über den Plan (`ZPLAN.LEBID`),
+NIE über die Rechnung. Umsatz = Privat/GOZ (`BEH.DMBETRAG`) + diese vier — überschneidungsfrei.
+
+| Sparte | Quelle | Reconciled 2026 |
+|---|---|---|
+| KCH | `BEH⋈GO` × Punktwert (GOART='g'; Punktwert = Rohziffern(PWWEST)÷10000, nur MAX(ABDATUM)) | ✓ (Timing-Versatz bekannt) |
+| PAR | FAKT RART=5050 ⋈ PARHIT ⋈ ZPLAN + `0kp`-Sammel pro-rata (Gewicht PARHIT.SUMTOTAL) | exakt 94.978,17 € |
+| ZE  | FAKT RART 5060/6020 → BILL → ZPLAN + `0kz`-Sammel pro-rata (Gewicht ZEHIT.ZE2 F4 = SUBSTRING(ZE2,61,10)) | 99,7 % (62.891 €) |
+| KBR | `0kb`-Sammel pro-rata (RART 5060, aber KBR!), Kohorte KBRHIT, Gewicht SUMTOTAL | exakt 28.697,06 € |
+
+**Fallstricke:** (a) **PWWEST ÷10000 aus Rohziffern** (NICHT das ÷100-Cent-Format) — sonst 100× zu klein.
+(b) Punktwert nur aus der **jüngsten** Periode je PWLART (`ABDATUM=MAX(ABDATUM≤heute)`), sonst
+werden historische Punktwerte gemischt. (c) pro-rata-Quote `SUM(x) OVER(...)` MUSS auf eigener
+CTE-Ebene liegen (sonst SQL-Fehler). (d) Sammelrechnungen: Konto `0kz/0kp/0kb`, Periode aus
+`RIGHT(BESCHREIBUNG,7)`='MM.JJJJ'; Fall-Periode aus `SUBSTRING(DTADATUM,5,2)+'.'+LEFT(DTADATUM,4)`.
+(e) `PARHIT.GLFDFAKT` ist LEER — Join über `PATNR+LFDPATBILL`.
+
+Umgesetzt in `core/src/z1db/control.rs`: `query_revenue_{kch,par,ze,kbr}` + `query_sammel_prorata`.
