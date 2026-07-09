@@ -360,36 +360,13 @@ async fn append_risk_notes(
     Ok(appended)
 }
 
-/// ASCII-case-insensitive Suche; liefert den Byte-Index in `hay` (die gesuchten
-/// Marker sind rein ASCII → Treffer liegen immer auf Zeichengrenzen).
-fn find_ci(hay: &str, needle: &str) -> Option<usize> {
-    let (h, n) = (hay.as_bytes(), needle.as_bytes());
-    if n.is_empty() || h.len() < n.len() {
-        return None;
-    }
-    (0..=h.len() - n.len()).find(|&i| h[i..i + n.len()].eq_ignore_ascii_case(n))
-}
-
-/// „co" als Care-of-Wort am Anfang (`co`, `co Meier`, `co.`) — aber NICHT als
-/// Teil eines Wortes (`Company`, `Cottbus`).
-fn starts_with_co(a: &str) -> bool {
-    let b = a.as_bytes();
-    b.len() >= 2
-        && b[0].eq_ignore_ascii_case(&b'c')
-        && b[1].eq_ignore_ascii_case(&b'o')
-        && (b.len() == 2 || !b[2].is_ascii_alphanumeric())
-}
-
-/// Erkennt einen „care-of"-Marker (CO/co/c/o/c.o.) im Adresszusatz. Bei einem
-/// Treffer wird **wortwörtlich** der feste Hinweis `"c/o Adresse"` als Flag in die
-/// Risikoanamnese geschrieben (NICHT die echte Adresse) — sonst `None`.
+/// Der Cloud-Adresszusatz stammt aus dem dedizierten Anamnese-Feld „Adresszusatz (c/o)".
+/// Ist es befüllt, liegt per Definition eine c/o-Adresse vor — wir raten NICHT mehr im
+/// Text nach „c/o"/„co" (das verpasste c/o-Fälle ohne die Buchstaben, z. B. reine
+/// Einrichtungsnamen). Jeder nicht-leere Adresszusatz setzt daher den festen Hinweis
+/// `"c/o Adresse"` als Flag in die Risikoanamnese (NICHT die echte Adresse) — sonst `None`.
 fn co_note(addendum: &str) -> Option<String> {
-    let a = addendum.trim();
-    if a.is_empty() {
-        return None;
-    }
-    let found = find_ci(a, "c/o").is_some() || find_ci(a, "c.o.").is_some() || starts_with_co(a);
-    found.then(|| "c/o Adresse".to_string())
+    (!addendum.trim().is_empty()).then(|| "c/o Adresse".to_string())
 }
 
 #[cfg(test)]
@@ -397,17 +374,17 @@ mod tests {
     use super::co_note;
 
     #[test]
-    fn co_marker_setzt_festen_hinweis() {
-        // Immer wortwörtlich "c/o Adresse" (nicht die echte Adresse).
-        for s in ["c/o Max Mustermann", "co Pflegeheim", "CO Meier", "c.o. Schmidt", "Wohnung 5, c/o Krüger", "c/o", "co"] {
+    fn befuellter_adresszusatz_setzt_festen_hinweis() {
+        // Jeder nicht-leere Zusatz = c/o; immer wortwörtlich "c/o Adresse" (nicht die echte Adresse).
+        for s in ["c/o Max Mustermann", "Pflegeheim Sonnenhof", "bei Familie Krüger", "co Meier", "c/o"] {
             assert_eq!(co_note(s).as_deref(), Some("c/o Adresse"), "input: {s}");
         }
     }
 
     #[test]
-    fn kein_co_marker() {
-        for s in ["", "Hinterhaus", "Company GmbH", "Cottbus", "3. OG links"] {
-            assert_eq!(co_note(s), None, "input: {s}");
+    fn leerer_adresszusatz_kein_hinweis() {
+        for s in ["", "   ", "\t"] {
+            assert_eq!(co_note(s), None, "input: {s:?}");
         }
     }
 }
