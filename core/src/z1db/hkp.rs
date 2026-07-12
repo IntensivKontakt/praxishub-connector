@@ -137,23 +137,47 @@ fn antrag_token(antragsnummer: &str) -> &str {
     antragsnummer.split_whitespace().next().unwrap_or("")
 }
 
-/// Alle Textwerte eines XML-Tags (naive Extraktion, reicht fürs EEBZ0-Schema —
-/// die Werte selbst enthalten kein Markup). Namespace-Präfix gehört zum Tag.
-fn xml_values(xml: &str, tag: &str) -> Vec<String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
+/// Roh-Inhalte aller Elemente mit passendem **lokalem** Tagnamen (Namespace-
+/// Präfix egal): Die EEBZ0-Schemas nutzen je Fachbereich eigene Präfixe
+/// (`zer:` bei ZE, `par:`/`para:`/`parb:` bei PAR, …) — der lokale Name ist
+/// das stabile Merkmal. Naive Extraktion, reicht fürs EEBZ0-Schema; nicht
+/// rekursiv (verschachtelte gleichnamige Tags kommen dort nicht vor).
+fn xml_inners<'a>(xml: &'a str, local: &str) -> Vec<&'a str> {
     let mut out = Vec::new();
     let mut rest = xml;
-    while let Some(i) = rest.find(&open) {
-        rest = &rest[i + open.len()..];
-        let Some(j) = rest.find(&close) else { break };
-        let v = rest[..j].trim();
-        if !v.is_empty() {
-            out.push(v.to_string());
+    while let Some(i) = rest.find('<') {
+        rest = &rest[i + 1..];
+        if rest.starts_with(['/', '!', '?']) {
+            continue;
         }
-        rest = &rest[j + close.len()..];
+        let name_end = rest
+            .find(['>', '/', ' ', '\t', '\r', '\n'])
+            .unwrap_or(rest.len());
+        let name = &rest[..name_end];
+        if name.rsplit(':').next() != Some(local) {
+            continue;
+        }
+        let Some(gt) = rest.find('>') else { break };
+        if rest[..gt].ends_with('/') {
+            continue; // self-closing → kein Inhalt
+        }
+        let body = &rest[gt + 1..];
+        let close = format!("</{name}>");
+        let Some(j) = body.find(&close) else { continue };
+        out.push(&body[..j]);
+        rest = &body[j + close.len()..];
     }
     out
+}
+
+/// Alle nicht-leeren Textwerte eines Tags (per lokalem Namen, s. [`xml_inners`]).
+fn xml_values(xml: &str, local: &str) -> Vec<String> {
+    xml_inners(xml, local)
+        .into_iter()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// Deutscher Dezimalbetrag (`"1445,37"`) → f64.
@@ -164,37 +188,144 @@ fn parse_de_amount(s: &str) -> Option<f64> {
 /// Aus dem EEBZ0-XML extrahierte Fall-Daten fürs Tracking.
 #[derive(Debug, Default, Clone)]
 struct XmlFacts {
-    /// `zer:Behandlungskosten_insgesamt` (Euro).
+    /// ZE: `zer:Behandlungskosten_insgesamt` (Euro). PAR: geschätztes Honorar
+    /// (BEMA-Punkte × konfigurierter Punktwert), sonst leer.
     betrag_gesamt: Option<f64>,
     /// Kompakte Leistungsbeschreibung (dedupliziert, `"; "`-verbunden, gekappt).
     leistung: Option<String>,
 }
 
-/// Extrahiert Gesamtbetrag + Leistungsbeschreibung aus dem EEBZ0-XML.
+/// Kappt die Leistungsbeschreibung auf ~300 Zeichen (UTF-8-sicher).
+fn cap_leistung(mut s: String) -> String {
+    if s.len() > 300 {
+        let mut cut = 297;
+        while !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        s.truncate(cut);
+        s.push('…');
+    }
+    s
+}
+
+/// BEMA-Punktzahlen der ePAR-Antragspositionen (BEMA Teil 4, seit 07/2021):
+/// XML-Tag (in `Geplante_Leistungen` bzw. `Leistungen_ab_Behandlungseinstieg_PAR`),
+/// Anzeige-Label, Punkte. Der ePAR-Antrag trägt KEINE Euro-Beträge — nur diese
+/// Stückzahlen; CPT/UPT werden separat beantragt und fehlen hier systembedingt.
+const PAR_POINTS: &[(&str, &str, u32)] = &[
+    ("Anzahl_Gebuehrennummer_4", "PAR-Status (4)", 44),
+    ("Anzahl_Gebuehrennummer_ATG", "ATG", 28),
+    ("Anzahl_Gebuehrennummer_MHU", "MHU", 45),
+    ("Anzahl_Gebuehrennummer_AITa", "AIT a", 14),
+    ("Anzahl_Gebuehrennummer_AITb", "AIT b", 26),
+    ("Anzahl_Gebuehrennummer_BEVa", "BEV a", 32),
+];
+
+/// ePAR (EEBZ0-PAR): geplante Leistungen + Klassifikation als Text, Honorar
+/// als Punktwert-Schätzung. Nur der Block der GEPLANTEN Leistungen zählt —
+/// `Leistungen_vorherige_Krankenkasse` (Kassenwechsel) wird ignoriert.
+fn extract_par_facts(xml: &str, par_punktwert: f64) -> XmlFacts {
+    let block = xml_inners(xml, "Geplante_Leistungen")
+        .into_iter()
+        .next()
+        .or_else(|| xml_inners(xml, "Leistungen_ab_Behandlungseinstieg_PAR").into_iter().next());
+    let Some(block) = block else {
+        return XmlFacts::default();
+    };
+    let mut parts: Vec<String> = Vec::new();
+    let mut punkte = 0u32;
+    for (tag, label, pts) in PAR_POINTS {
+        let n: u32 = xml_values(block, tag)
+            .first()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        if n == 0 {
+            continue;
+        }
+        punkte += n * pts;
+        parts.push(if n == 1 { (*label).to_string() } else { format!("{label} ×{n}") });
+    }
+    if parts.is_empty() {
+        return XmlFacts::default();
+    }
+    // Klassifikation gemäß PAR-Richtlinie: Stadium I–IV + Progressionsgrad A–C.
+    let mut head = String::from("PAR-Therapie");
+    let stadium = xml_values(xml, "Stadium").into_iter().next();
+    if let Some(st) = stadium.as_deref().and_then(|s| match s {
+        "1" => Some("I"),
+        "2" => Some("II"),
+        "3" => Some("III"),
+        "4" => Some("IV"),
+        _ => None,
+    }) {
+        head.push_str(&format!(" Stadium {st}"));
+    }
+    if let Some(g) = xml_inners(xml, "Progression")
+        .into_iter()
+        .next()
+        .and_then(|p| xml_values(p, "Grad").into_iter().next())
+    {
+        head.push_str(&format!(" Grad {g}"));
+    }
+    let leistung = format!("{head}: {} ({punkte} BEMA-Punkte)", parts.join(", "));
+    let betrag_gesamt = (par_punktwert > 0.0)
+        .then(|| (f64::from(punkte) * par_punktwert * 100.0).round() / 100.0);
+    XmlFacts { betrag_gesamt, leistung: Some(cap_leistung(leistung)) }
+}
+
+/// eKBR/eKGL (EEBZ0-KBR/KGL): geplante BEMA-Nummern (`Leistung_BEMA`) plus
+/// Freitext `Vorgesehene_Behandlung`. Euro-Beträge gibt es im Antrag nicht.
+fn extract_kbr_facts(xml: &str) -> XmlFacts {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(block) = xml_inners(xml, "Geplante_Leistungen").into_iter().next() {
+        for l in xml_inners(block, "Leistung_BEMA") {
+            let Some(nr) = xml_values(l, "Gebuehrennummer_BEMA").into_iter().next() else {
+                continue;
+            };
+            let n: u32 = xml_values(l, "Anzahl").first().and_then(|s| s.parse().ok()).unwrap_or(1);
+            parts.push(if n <= 1 { nr } else { format!("{nr} ×{n}") });
+        }
+    }
+    let mut leistung = parts.join(", ");
+    if let Some(txt) = xml_values(xml, "Vorgesehene_Behandlung").into_iter().next() {
+        if leistung.is_empty() {
+            leistung = txt;
+        } else {
+            leistung = format!("{txt} — {leistung}");
+        }
+    }
+    XmlFacts { betrag_gesamt: None, leistung: opt(&cap_leistung(leistung)) }
+}
+
+/// Extrahiert Gesamtbetrag + Leistungsbeschreibung aus dem EEBZ0-XML — je nach
+/// Fachbereich: ZE (`zer:`, einziges Schema mit Euro-Beträgen), ePAR (nur
+/// Stückzahlen → Punkte-Schätzung), eKBR/KGL (nur BEMA-Nummern + Freitext).
 /// Ein Patientenanteil steht NICHT im Antrag (EEBZ0 trägt nur Befundnummern,
 /// keine Festzuschuss-Euros) — der bleibt bewusst leer.
-fn extract_xml_facts(xml_bytes: &[u8]) -> XmlFacts {
+fn extract_xml_facts(xml_bytes: &[u8], par_punktwert: f64) -> XmlFacts {
     let xml = String::from_utf8_lossy(xml_bytes);
-    let betrag_gesamt = xml_values(&xml, "zer:Behandlungskosten_insgesamt")
+    // ZE (eHKP): Behandlungskosten + Klartext-Leistungsbeschreibungen.
+    let betrag_gesamt = xml_values(&xml, "Behandlungskosten_insgesamt")
         .first()
         .and_then(|s| parse_de_amount(s));
     let mut seen = std::collections::HashSet::new();
     let mut parts: Vec<String> = Vec::new();
-    for l in xml_values(&xml, "zer:Leistungsbeschreibung") {
+    for l in xml_values(&xml, "Leistungsbeschreibung") {
         if seen.insert(l.clone()) {
             parts.push(l);
         }
     }
-    let mut leistung = parts.join("; ");
-    if leistung.len() > 300 {
-        let mut cut = 297;
-        while !leistung.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        leistung.truncate(cut);
-        leistung.push('…');
+    if betrag_gesamt.is_some() || !parts.is_empty() {
+        let leistung = cap_leistung(parts.join("; "));
+        return XmlFacts { betrag_gesamt, leistung: opt(&leistung) };
     }
-    XmlFacts { betrag_gesamt, leistung: opt(&leistung) }
+    // ePAR: eigene Struktur ohne Euro.
+    let par = extract_par_facts(&xml, par_punktwert);
+    if par.leistung.is_some() {
+        return par;
+    }
+    // eKBR/KGL: BEMA-Nummern + Freitext.
+    extract_kbr_facts(&xml)
 }
 
 /// Persistenter Store: Fall-Schlüssel → zuletzt gemeldeter Status (Change-Detect).
@@ -511,11 +642,11 @@ async fn poll_once(cfg: &ConnectorConfig, cloud: &CloudClient, store: &mut Statu
         // Fingerprint statt nur Status-Label → erkennt auch neue Rückfragen/
         // Antworten oder zusätzliche Pläne (AAV) im Fall, damit das Drawer im
         // Cloud nicht veraltet, obwohl das Status-Label gleich bleibt.
-        // `v2`: Payload um Behandler/Betrag/Leistung + XML-Fix erweitert — die
-        // Versionierung erzwingt nach dem Update eine EINMALIGE Neumeldung aller
-        // Fälle (Backfill der neuen Felder), danach greift wieder Change-Detect.
+        // `v3`: Betrag/Leistung jetzt auch für ePAR/eKBR (schemaspezifische
+        // XML-Extraktion) — die Versionierung erzwingt nach dem Update eine
+        // EINMALIGE Neumeldung aller Fälle (Backfill), danach Change-Detect.
         let fingerprint = format!(
-            "v2|{status}|{}|{}|{}|{}|{}|{}",
+            "v3|{status}|{}|{}|{}|{}|{}|{}",
             pfacts.versand,
             pfacts.rueckfrage_date,
             pfacts.decision_date,
@@ -529,8 +660,11 @@ async fn poll_once(cfg: &ConnectorConfig, cloud: &CloudClient, store: &mut Statu
 
         let prow = &plans[&primary];
         let xml = fetch_hkp_xml(&mut conn, &prow.antragsnummer).await.unwrap_or(None);
-        // Betrag + echte Leistungsbeschreibung aus dem EEBZ0-XML.
-        let xml_facts = xml.as_deref().map(extract_xml_facts).unwrap_or_default();
+        // Betrag + echte Leistungsbeschreibung aus dem EEBZ0-XML (ZE/PAR/KBR).
+        let xml_facts = xml
+            .as_deref()
+            .map(|b| extract_xml_facts(b, cfg.z1_par_punktwert))
+            .unwrap_or_default();
         // Behandler des führenden Plans (ZPLAN.LEBID → PERSONAL).
         let beh = behandler.get(&prow.lebid);
         let behandler_kuerzel = beh.and_then(|b| opt(&b.kuerzel));
@@ -726,12 +860,73 @@ mod tests {
             <zer:Behandlungskosten_insgesamt>1445,37</zer:Behandlungskosten_insgesamt>\
         </zer:Kostenplanung></Antrag>"
             .as_bytes();
-        let f = extract_xml_facts(xml);
+        let f = extract_xml_facts(xml, 0.0);
         assert_eq!(f.betrag_gesamt, Some(1445.37));
         // dedupliziert: die doppelte Adhäsive Befestigung nur einmal
         let l = f.leistung.unwrap();
         assert_eq!(l.matches("Befestigung").count(), 1);
         assert!(l.starts_with("Vollkrone"));
+    }
+
+    /// Realistische ePAR-Struktur (EEBZ0-PAR/PARA): keine Euro-Felder, nur
+    /// Stückzahlen. Der Kassenwechsel-Block darf NICHT mitgezählt werden.
+    fn par_xml() -> &'static [u8] {
+        "<par:PAR><par:PARA>\
+            <para:Schweregrad><para:Stadium>3</para:Stadium><para:Zahnverlust>1</para:Zahnverlust></para:Schweregrad>\
+            <para:Progression><para:Grad>B</para:Grad><para:Diabetes>1</para:Diabetes></para:Progression>\
+            <para:Geplante_Leistungen>\
+                <para:Anzahl_Gebuehrennummer_4>1</para:Anzahl_Gebuehrennummer_4>\
+                <para:Anzahl_Gebuehrennummer_ATG>1</para:Anzahl_Gebuehrennummer_ATG>\
+                <para:Anzahl_Gebuehrennummer_MHU>1</para:Anzahl_Gebuehrennummer_MHU>\
+                <para:Anzahl_Gebuehrennummer_AITa>8</para:Anzahl_Gebuehrennummer_AITa>\
+                <para:Anzahl_Gebuehrennummer_AITb>6</para:Anzahl_Gebuehrennummer_AITb>\
+                <para:Anzahl_Gebuehrennummer_BEVa>1</para:Anzahl_Gebuehrennummer_BEVa>\
+            </para:Geplante_Leistungen>\
+            <para:Krankenkassenwechsel><para:Leistungen_vorherige_Krankenkasse>\
+                <para:Anzahl_Gebuehrennummer_AITa>99</para:Anzahl_Gebuehrennummer_AITa>\
+            </para:Leistungen_vorherige_Krankenkasse></para:Krankenkassenwechsel>\
+        </par:PARA></par:PAR>"
+            .as_bytes()
+    }
+
+    #[test]
+    fn epar_leistungen_und_punkte_werden_extrahiert() {
+        let f = extract_xml_facts(par_xml(), 0.0);
+        // 44 + 28 + 45 + 8×14 + 6×26 + 32 = 417 Punkte
+        let l = f.leistung.unwrap();
+        assert!(l.starts_with("PAR-Therapie Stadium III Grad B:"), "{l}");
+        assert!(l.contains("AIT a ×8"), "{l}");
+        assert!(l.contains("AIT b ×6"), "{l}");
+        assert!(l.contains("ATG"), "{l}");
+        assert!(l.contains("(417 BEMA-Punkte)"), "{l}");
+        // Kassenwechsel-Block (×99) wurde ignoriert
+        assert!(!l.contains("99"), "{l}");
+        // ohne Punktwert kein Betrag
+        assert_eq!(f.betrag_gesamt, None);
+    }
+
+    #[test]
+    fn epar_betrag_wird_aus_punktwert_geschaetzt() {
+        let f = extract_xml_facts(par_xml(), 1.2);
+        assert_eq!(f.betrag_gesamt, Some(500.4)); // 417 × 1,20 €
+    }
+
+    #[test]
+    fn ekbr_leistungen_werden_extrahiert() {
+        let xml = "<kbr:KBR>\
+            <kbr:Vorgesehene_Behandlung>Aufbissbehelf adjustiert</kbr:Vorgesehene_Behandlung>\
+            <kbr:Geplante_Leistungen>\
+                <kbr:Leistung_BEMA><kbr:Gebuehrennummer_BEMA>K1</kbr:Gebuehrennummer_BEMA><kbr:Anzahl>1</kbr:Anzahl></kbr:Leistung_BEMA>\
+                <kbr:Leistung_BEMA><kbr:Gebuehrennummer_BEMA>K4</kbr:Gebuehrennummer_BEMA><kbr:Anzahl>2</kbr:Anzahl></kbr:Leistung_BEMA>\
+            </kbr:Geplante_Leistungen>\
+        </kbr:KBR>"
+            .as_bytes();
+        let f = extract_xml_facts(xml, 1.2); // Punktwert gilt nur für PAR
+        assert_eq!(f.betrag_gesamt, None);
+        assert_eq!(
+            f.leistung.as_deref(),
+            Some("Aufbissbehelf adjustiert — K1, K4 ×2")
+        );
     }
 
     #[test]
@@ -748,5 +943,17 @@ mod tests {
         let xml = "<a><t>eins</t><t></t><t> zwei </t></a>";
         assert_eq!(xml_values(xml, "t"), vec!["eins".to_string(), "zwei".to_string()]);
         assert!(xml_values(xml, "fehlt").is_empty());
+    }
+
+    #[test]
+    fn xml_values_matcht_lokalen_namen_praefix_egal() {
+        let xml = "<zer:t>eins</zer:t><par:t>zwei</par:t><t>drei</t><x:not>vier</x:not>";
+        assert_eq!(xml_values(xml, "t"), vec!["eins", "zwei", "drei"]);
+        // Teilstring des lokalen Namens matcht NICHT (Grad vs Lockerungsgrad)
+        let xml2 = "<a:Lockerungsgrad>2</a:Lockerungsgrad><a:Grad>B</a:Grad>";
+        assert_eq!(xml_values(xml2, "Grad"), vec!["B"]);
+        // Self-closing und Attribute stören nicht
+        let xml3 = "<a:t/><a:t attr=\"x\">wert</a:t>";
+        assert_eq!(xml_values(xml3, "t"), vec!["wert"]);
     }
 }

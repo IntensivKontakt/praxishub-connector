@@ -179,16 +179,19 @@ pub struct HkpCaseReport {
     /// Behandler-Kürzel (`PERSONAL.KUERZEL`, z. B. `"st"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub behandler_kuerzel: Option<String>,
-    /// Gesamtbetrag des Plans in Euro (`zer:Behandlungskosten_insgesamt` aus dem
-    /// EEBZ0-XML) — nur gesetzt, wenn das XML vorliegt.
+    /// Gesamtbetrag des Plans in Euro. ZE: `zer:Behandlungskosten_insgesamt` aus
+    /// dem EEBZ0-XML. ePAR: Schätzung geplante BEMA-Punkte × `z1_par_punktwert`
+    /// (der ePAR-Antrag enthält keine Euro-Beträge). Nur gesetzt, wenn ableitbar.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub betrag_gesamt: Option<f64>,
     /// Patientenanteil in Euro. Steht NICHT im Antrag (EEBZ0) — bleibt vorerst
     /// leer; berechenbar erst aus der Kassen-Antwort (EEBZ1, Festzuschüsse).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub betrag_patientenanteil: Option<f64>,
-    /// Echte Leistungsbeschreibung (dedupliziert aus `zer:Leistungsbeschreibung`,
-    /// `"; "`-verbunden, gekappt) — ersetzt das bisherige Planart-Label im Backend.
+    /// Echte Leistungsbeschreibung, gekappt — ZE: dedupliziert aus
+    /// `zer:Leistungsbeschreibung`; ePAR: Klassifikation + geplante Positionen
+    /// (z. B. `PAR-Therapie Stadium III Grad B: …, AIT a ×8, … (417 BEMA-Punkte)`);
+    /// eKBR/KGL: Freitext + BEMA-Nummern. Ersetzt das Planart-Label im Backend.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub leistung: Option<String>,
     /// Voll-HKP-EEBZ0-XML (Base64) des führenden Plans — Rendern per KZBV-XSLT.

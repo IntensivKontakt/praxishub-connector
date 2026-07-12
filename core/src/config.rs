@@ -102,6 +102,12 @@ pub struct ConnectorConfig {
     /// filtert die Anzeige feiner (Standard z. B. 6 Monate, einstellbar).
     #[serde(default = "default_hkp_lookback")]
     pub z1_hkp_lookback_months: u32,
+    /// € je BEMA-Punkt für die ePAR-Honorar-Schätzung (KZV-Punktwert PAR).
+    /// Der ePAR-Antrag enthält keine Euro-Beträge — bei gesetztem Punktwert
+    /// meldet der Connector Betrag = geplante BEMA-Punkte × Punktwert.
+    /// `0` (Default) = keine Schätzung; Leistungen + Punktesumme kommen immer.
+    #[serde(default)]
+    pub z1_par_punktwert: f64,
 
     // ── Praxis-Steuerung (nächtlicher Aggregat-Sync, docs: z1db/control.rs) ──
     /// Täglichen Controlling-Sync (BEH/KONTO/CASH/FAKT/BILL-Aggregate → Cloud)
@@ -172,6 +178,7 @@ impl Default for ConnectorConfig {
             z1_db_write_password: String::new(),
             z1_db_trust_cert: true,
             z1_hkp_lookback_months: default_hkp_lookback(),
+            z1_par_punktwert: 0.0,
             z1_control_enabled: false,
             z1_control_hour: default_control_hour(),
             z1_control_months: default_control_months(),

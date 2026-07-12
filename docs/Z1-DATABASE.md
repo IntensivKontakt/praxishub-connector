@@ -89,6 +89,16 @@ Befunde für Festzuschüsse + Zuschusshöhe, `Leistung_BEMA`/`Leistung_GOZ` +
 Versicherter/Kasse/Zahnarzt. Rendern per offizieller KZBV-XSLT (oder eines der PDFs im
 FILEPOOL). `EEBZ1_*.xml` = Genehmigungs-/Ablehnungs-Antwort.
 
+**⚠ Nur das ZE-Schema trägt Euro-Beträge.** Die Fachbereichs-Schemas (offizielle
+GKV-XSDs, gkv-datenaustausch.de) sind je Planart verschieden: ePAR (`EEBZ0-PAR`/
+`PARA`/`PARB`) enthält **keine** Kosten-/Honorarfelder — nur Diagnose (Stadium 1–4,
+Progressionsgrad A–C), Zahnbefunde und `Geplante_Leistungen` als Stückzahlen
+(`Anzahl_Gebuehrennummer_4/ATG/MHU/AITa/AITb/BEVa`; CPT/UPT werden separat
+beantragt). eKBR/KGL: nur `Leistung_BEMA` (`Gebuehrennummer_BEMA`+`Anzahl`) +
+Freitext `Vorgesehene_Behandlung`. Der Connector baut daraus die Leistungs-
+beschreibung und schätzt das PAR-Honorar optional über BEMA-Punkte ×
+konfigurierten KZV-Punktwert (`z1_par_punktwert`).
+
 ### 3c. Plan-Stammdaten — Tabelle `ZPLAN` (Planverwaltung, inkl. Privatpläne)
 Key `PATNR + LFDPLAN`. Wichtige Felder: `PLANART`, `KASSENPLAN`, `ANTRAGSNUMMER`,
 `MITTEILUNGSNUMMER`, `PLANSTATUS`, `PLANUNGSDATUM`, `DRUCKDATUM`, `KZVEINREICHDATUM`,

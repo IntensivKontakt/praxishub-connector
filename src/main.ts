@@ -31,6 +31,7 @@ interface ConnectorConfig {
   z1_db_write_password: string;
   z1_db_trust_cert: boolean;
   z1_hkp_lookback_months: number;
+  z1_par_punktwert: number;
   // Rückschreib-Toggles
   writeback_contact: boolean;
   writeback_address: boolean;
@@ -66,6 +67,7 @@ function blankConfig(): ConnectorConfig {
     z1_db_write_password: "",
     z1_db_trust_cert: true,
     z1_hkp_lookback_months: 24,
+    z1_par_punktwert: 0,
     writeback_contact: false,
     writeback_address: false,
     writeback_cave: false,
@@ -224,6 +226,10 @@ function collectFromWizard(): ConnectorConfig {
     z1_hkp_lookback_months: hasEl("z1_hkp_lookback_months")
       ? parseInt(val("z1_hkp_lookback_months") || "24", 10)
       : cfg.z1_hkp_lookback_months,
+    // Deutsches Komma erlaubt ("1,2"); leer/ungültig = 0 = keine Schätzung.
+    z1_par_punktwert: hasEl("z1_par_punktwert")
+      ? parseFloat(val("z1_par_punktwert").replace(",", ".")) || 0
+      : cfg.z1_par_punktwert,
     writeback_contact: hasEl("writeback_contact") ? checked("writeback_contact") : cfg.writeback_contact,
     writeback_address: hasEl("writeback_address") ? checked("writeback_address") : cfg.writeback_address,
     writeback_cave: hasEl("writeback_cave") ? checked("writeback_cave") : cfg.writeback_cave,
@@ -385,6 +391,7 @@ function renderDashboard() {
       </div>
       <label class="check" style="display:flex;align-items:center;gap:8px;margin:8px 0"><input type="checkbox" id="z1_db_trust_cert" /> Selbstsigniertes Serverzertifikat akzeptieren</label>
       <div class="field"><label>HKP-Verlauf: abgeschlossene Fälle bis (Monate zurück, 0 = unbegrenzt)</label><input id="z1_hkp_lookback_months" placeholder="24" /></div>
+      <div class="field"><label>ePAR: KZV-Punktwert PAR in € (für Honorar-Schätzung; der ePAR-Antrag enthält keine Beträge — 0 = keine Schätzung)</label><input id="z1_par_punktwert" placeholder="z. B. 1,2846" /></div>
       <div class="actions"><button id="test_z1db">Z1-DB testen</button></div>
       <div class="result" id="z1_result"></div>
 
@@ -484,6 +491,8 @@ function applyConfig(c: ConnectorConfig) {
   setIf("z1_db_write_user", c.z1_db_write_user);
   setIf("z1_db_write_password", c.z1_db_write_password);
   setIf("z1_hkp_lookback_months", String(c.z1_hkp_lookback_months ?? 24));
+  // setIf setzt nur nicht-leere Werte — 0 (= aus) bleibt als Placeholder leer.
+  setIf("z1_par_punktwert", c.z1_par_punktwert ? String(c.z1_par_punktwert).replace(".", ",") : "");
   setChecked("z1_db_trust_cert", c.z1_db_trust_cert ?? true);
   setChecked("writeback_contact", c.writeback_contact);
   setChecked("writeback_address", c.writeback_address);
