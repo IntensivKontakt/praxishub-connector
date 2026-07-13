@@ -92,7 +92,7 @@ fn run_potential_analysis() -> i32 {
     if !cfg.z1db_read_ready() {
         report(
             "FEHLER: Kein PVS-DB-Lesezugriff konfiguriert. Im Connector unter \
-             „Z1-Datenbank" Server + Read-only-Login eintragen (Cloud ist NICHT nötig).",
+             „Z1-Datenbank“ Server + Read-only-Login eintragen (Cloud ist NICHT nötig).",
         );
         return 2;
     }

@@ -299,7 +299,7 @@ pub fn evaluate(inputs: &AnalysisInputs) -> PotentialReport {
                 ],
                 potential_eur_min: Some(per_year * PLAN_RESCUE_MIN),
                 potential_eur_max: Some(per_year * PLAN_RESCUE_MAX),
-                recommendation: "Arbeitsliste „genehmigt & nicht terminiert" mit Frist-Countdown; Patienten vor Ablauf aktiv terminieren (Praxishub-HKP-Tracking).".into(),
+                recommendation: "Arbeitsliste „genehmigt & nicht terminiert“ mit Frist-Countdown; Patienten vor Ablauf aktiv terminieren (Praxishub-HKP-Tracking).".into(),
             });
         }
     }
