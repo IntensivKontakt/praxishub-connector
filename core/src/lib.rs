@@ -10,6 +10,7 @@
 //! Die App-Schicht (`src-tauri`) hält Konfiguration, UI und Lebenszyklus; dieser
 //! Kern bleibt rein und unit-testbar.
 
+pub mod analysis;
 pub mod cloud;
 pub mod config;
 pub mod crypto;

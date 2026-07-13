@@ -22,6 +22,7 @@
 //! Zeilenzahl-Assertion, `RINFO` app-treu setzen. Jede Fähigkeit ist per Toggle
 //! einzeln aktivierbar.
 
+pub mod analysis;
 pub mod archiv;
 pub mod bootstrap;
 pub mod client;

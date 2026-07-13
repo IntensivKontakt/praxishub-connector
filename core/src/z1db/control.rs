@@ -35,7 +35,7 @@ use crate::z1db::{self, LoopHandle, Z1Connection};
 use chrono::Timelike;
 use std::collections::BTreeMap;
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// Zeitlimit für einen kompletten Sync-Zyklus (Discovery + Aggregate + Push).
 const CYCLE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -79,13 +79,13 @@ fn sql_amount(expr: &str) -> String {
 /// korrekt — am ZMM verifiziert: n_leistungen stimmte, honorar war 0). Deshalb den
 /// Betrag als `decimal(19,2)`→`varchar` zurückgeben und in Rust mit [`parse_amount`]
 /// parsen.
-fn as_amount_str(float_expr: &str) -> String {
+pub(crate) fn as_amount_str(float_expr: &str) -> String {
     format!("CONVERT(varchar(40), CAST({float_expr} AS decimal(19,2)))")
 }
 
 /// Parst einen (SQL-seitig als String gelieferten) Betrag robust nach `f64` —
 /// deutsche Komma- wie Punkt-Notation. Produktiv genutzt (s. [`as_amount_str`]).
-fn parse_amount(s: &str) -> f64 {
+pub(crate) fn parse_amount(s: &str) -> f64 {
     let t = s.trim();
     if t.is_empty() {
         return 0.0;
@@ -1100,6 +1100,20 @@ async fn sync_once(cfg: &ConnectorConfig, cloud: &CloudClient) -> Result<()> {
         open_services = report.open_services.len(),
         "Praxis-Steuerungs-Report an die Cloud gemeldet"
     );
+
+    // Potenzialanalyse huckepack (gleicher Tagesrhythmus, best effort): Rohzahlen
+    // erheben, bewerten, an die Cloud melden — fürs Analyse-Dashboard.
+    let today = chrono::Local::now().date_naive();
+    let analysis_inputs = crate::z1db::analysis::collect_inputs(&mut conn, today).await;
+    let analysis_report = crate::analysis::evaluate(&analysis_inputs);
+    match cloud.report_analysis(&analysis_report).await {
+        Ok(()) => info!(
+            befunde = analysis_report.findings.len(),
+            potenzial_max = analysis_report.total_potential_eur_max as i64,
+            "Potenzialanalyse an die Cloud gemeldet"
+        ),
+        Err(e) => debug!(error=%e, "Potenzialanalyse-Upload fehlgeschlagen (Backend-Route evtl. offen)"),
+    }
     Ok(())
 }
 

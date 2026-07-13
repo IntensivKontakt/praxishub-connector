@@ -19,6 +19,12 @@ fn main() {
         std::process::exit(run_push_test(&args[pos + 1..]));
     }
 
+    // Potenzialanalyse (Sales/vor Ort): liest read-only die PVS-DB, bewertet die
+    // ökonomischen Hebel und schreibt einen lokalen HTML-Report — OHNE Cloud.
+    if args.iter().any(|a| a == "--potenzialanalyse") {
+        std::process::exit(run_potential_analysis());
+    }
+
     // Vom PVS via VDDS-media aufgerufen? (Argument = Pfad auf eine .ini-Datei)
     if let Some(ini) = args.iter().skip(1).find(|a| connector_core::vdds::media::is_media_invocation(a)) {
         let path = std::path::Path::new(ini);
@@ -59,6 +65,81 @@ fn main() {
     }
 
     praxishub_connector_lib::run();
+}
+
+/// Potenzialanalyse als Einmal-Lauf (Sales-Einsatz, vor dem Kauf): braucht nur
+/// die im Connector hinterlegten PVS-Lesezugangsdaten — KEINE Cloud, kein
+/// Tenant. Erhebt die Kennzahlen read-only, bewertet sie
+/// ([`connector_core::analysis::evaluate`]) und schreibt HTML + JSON nach
+/// `…\logs\potenzialanalyse-<datum>.html/.json`; das HTML wird direkt geöffnet.
+///
+/// Aufruf: `praxishub-connector.exe --potenzialanalyse`
+fn run_potential_analysis() -> i32 {
+    let report = |msg: &str| {
+        println!("{msg}");
+        eprintln!("{msg}");
+        if let Ok(dir) = connector_core::paths::log_dir() {
+            let _ = std::fs::write(dir.join("potenzialanalyse-fehler.txt"), msg);
+        }
+    };
+    let cfg = match connector_core::ConnectorConfig::load() {
+        Ok(c) => c,
+        Err(e) => {
+            report(&format!("FEHLER: Konfiguration nicht lesbar: {e}"));
+            return 2;
+        }
+    };
+    if !cfg.z1db_read_ready() {
+        report(
+            "FEHLER: Kein PVS-DB-Lesezugriff konfiguriert. Im Connector unter \
+             „Z1-Datenbank" Server + Read-only-Login eintragen (Cloud ist NICHT nötig).",
+        );
+        return 2;
+    }
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            report(&format!("FEHLER: Runtime: {e}"));
+            return 2;
+        }
+    };
+    let result: Result<(std::path::PathBuf, String), String> = rt.block_on(async {
+        let mut conn = connector_core::z1db::connect(
+            &cfg.z1_db_server,
+            &cfg.z1_db_database,
+            &cfg.z1_db_user,
+            &cfg.z1_db_password,
+            cfg.z1_db_trust_cert,
+        )
+        .await
+        .map_err(|e| format!("PVS-DB nicht erreichbar: {e}"))?;
+        let today = chrono::Local::now().date_naive();
+        let inputs = connector_core::z1db::analysis::collect_inputs(&mut conn, today).await;
+        let rep = connector_core::analysis::evaluate(&inputs);
+        let dir = connector_core::paths::log_dir().map_err(|e| e.to_string())?;
+        let stem = format!("potenzialanalyse-{}", today.format("%Y%m%d"));
+        let html_path = dir.join(format!("{stem}.html"));
+        std::fs::write(&html_path, connector_core::analysis::render_html(&rep))
+            .map_err(|e| e.to_string())?;
+        let json = serde_json::to_string_pretty(&rep).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join(format!("{stem}.json")), json).map_err(|e| e.to_string())?;
+        Ok((html_path, format!("{} Befunde", rep.findings.len())))
+    });
+    match result {
+        Ok((html_path, summary)) => {
+            report(&format!("OK: {summary} — Report: {}", html_path.display()));
+            // Report direkt im Standardbrowser öffnen (Sales-Situation).
+            #[cfg(windows)]
+            let _ = std::process::Command::new("cmd")
+                .args(["/C", "start", "", &html_path.to_string_lossy()])
+                .spawn();
+            0
+        }
+        Err(e) => {
+            report(&format!("FEHLER: {e}"));
+            1
+        }
+    }
 }
 
 /// Manueller Test des VDDS-media-Dokumenten-Push gegen das echte Z1 — **ohne**

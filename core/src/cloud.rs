@@ -468,6 +468,20 @@ impl CloudClient {
         Ok(())
     }
 
+    /// Potenzialanalyse (PVS-agnostische Rohzahlen + bewertete Befunde) fürs
+    /// Analyse-Dashboard. **Backend-Vertrag offen:**
+    /// `POST /api/v1/connector/pvs/potential-analysis`.
+    pub async fn report_analysis(&self, report: &crate::analysis::PotentialReport) -> Result<()> {
+        self.auth(self.http.post(self.url("pvs/potential-analysis")))
+            .json(report)
+            .send()
+            .await
+            .map_err(|e| ConnectorError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| ConnectorError::Http(e.to_string()))?;
+        Ok(())
+    }
+
     /// Cloud-Patienten ohne Z1-PATID zum Nachmatchen (seitenweise über `limit`).
     pub async fn fetch_unmatched_patients(&self, limit: u32) -> Result<Vec<UnmatchedPatient>> {
         let url = format!("{}?limit={}", self.url("z1/patients/unmatched"), limit);
