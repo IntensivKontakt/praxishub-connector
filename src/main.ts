@@ -39,6 +39,7 @@ interface ConnectorConfig {
   writeback_anamnese: boolean;
   writeback_new_patient: boolean;
   writeback_co_to_risk: boolean;
+  writeback_archiv_link: boolean;
   // Praxis-Steuerung: nächtlicher Umsatz-/Leistungs-Aggregat-Sync (opt-in)
   z1_control_enabled: boolean;
   z1_control_hour: number;
@@ -74,6 +75,7 @@ function blankConfig(): ConnectorConfig {
     writeback_anamnese: false,
     writeback_new_patient: false,
     writeback_co_to_risk: false,
+    writeback_archiv_link: false,
     z1_control_enabled: false,
     z1_control_hour: 3,
     z1_control_months: 36,
@@ -236,6 +238,7 @@ function collectFromWizard(): ConnectorConfig {
     writeback_anamnese: hasEl("writeback_anamnese") ? checked("writeback_anamnese") : cfg.writeback_anamnese,
     writeback_new_patient: hasEl("writeback_new_patient") ? checked("writeback_new_patient") : cfg.writeback_new_patient,
     writeback_co_to_risk: hasEl("writeback_co_to_risk") ? checked("writeback_co_to_risk") : cfg.writeback_co_to_risk,
+    writeback_archiv_link: hasEl("writeback_archiv_link") ? checked("writeback_archiv_link") : cfg.writeback_archiv_link,
     z1_control_enabled: hasEl("z1_control_enabled") ? checked("z1_control_enabled") : cfg.z1_control_enabled,
     z1_control_hour: hasEl("z1_control_hour") ? clampInt(val("z1_control_hour"), 3, 0, 23) : cfg.z1_control_hour,
     z1_control_months: hasEl("z1_control_months") ? clampInt(val("z1_control_months"), 36, 1, 120) : cfg.z1_control_months,
@@ -418,6 +421,7 @@ function renderDashboard() {
       <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_cave" /> CAVE/Allergien in Risikoanamnese</label>
       <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_co_to_risk" /> Bei „c/o"-Adresszusatz Hinweis in Risikoanamnese</label>
       <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_anamnese" /> Krankenanamnese (PATINFO)</label>
+      <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_archiv_link" /> Anamnese-PDF im Z1-Karteireiter „Archiv" verlinken (wie Nelly)</label>
       <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_new_patient" /> Neupatient anlegen <span class="hint">(Vorsicht: Dubletten-Risiko beim Kartenstecken)</span></label>
 
       <h3 style="margin-top:20px">Praxis-Steuerung (Umsatz- &amp; Leistungs-Sync)</h3>
@@ -500,6 +504,7 @@ function applyConfig(c: ConnectorConfig) {
   setChecked("writeback_anamnese", c.writeback_anamnese);
   setChecked("writeback_new_patient", c.writeback_new_patient);
   setChecked("writeback_co_to_risk", c.writeback_co_to_risk);
+  setChecked("writeback_archiv_link", c.writeback_archiv_link ?? false);
   setChecked("z1_control_enabled", c.z1_control_enabled ?? false);
   setIf("z1_control_hour", String(c.z1_control_hour ?? 3));
   setIf("z1_control_months", String(c.z1_control_months ?? 36));

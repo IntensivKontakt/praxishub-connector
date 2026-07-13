@@ -281,6 +281,12 @@ async fn file_one(
     let outcome = media::file_document(import_program, &req, exchange_dir, &mmoid)?;
 
     if let FilingOutcome::Filed { matched_by } = &outcome {
+        // Anamnese im Z1-Karteireiter „Archiv" sichtbar machen (Nelly-Parität):
+        // PA-MMOID über den MMO-Info-Export suchen und die ARCHIV-Indexzeile
+        // schreiben. Best effort — ein Fehler hier lässt die Ablage bestehen.
+        if let Err(e) = link_in_z1_archiv(cfg, exchange_dir, &patient.patient_id, &mmoid, req.kind).await {
+            warn!(id = %doc.id, error = %e, "Z1-ARCHIV-Verlinkung fehlgeschlagen (Dokument liegt in PA)");
+        }
         // Wurde die PATID per Weg-A-Lookup aufgelöst, das der Cloud so melden
         // (sie bekommt trotzdem die getroffene PATID).
         let effective_matched_by = if matched_via_lookup { "db_lookup" } else { *matched_by };
@@ -293,6 +299,79 @@ async fn file_one(
         cloud.ack_document_filed(&doc.id, patid, effective_matched_by).await?;
     }
     Ok(outcome)
+}
+
+/// Schreibt die Z1-`ARCHIV`-Indexzeile fürs frisch importierte Dokument (Toggle
+/// `writeback_archiv_link`): PA-`MMOID` per MMO-Info-Export über den
+/// `COMMENT`-Anker (`Praxishub <doc-id>`) suchen, dann `z1db::archiv`-Insert.
+/// ConVis holt die Datei normalerweise synchron während des Pushs ab; sollte
+/// das Objekt (noch) fehlen, wird einmal kurz nachgefasst.
+async fn link_in_z1_archiv(
+    cfg: &ConnectorConfig,
+    exchange_dir: &Path,
+    patid: &str,
+    doc_mmoid: &str,
+    kind: DocumentKind,
+) -> Result<()> {
+    if !cfg.writeback_archiv_link || !cfg.z1db_write_login_configured() {
+        return Ok(());
+    }
+    // Nur Anamnesen: HKPs entstehen in Z1 selbst und sind dort schon sichtbar.
+    if !matches!(kind, DocumentKind::Anamnese) {
+        return Ok(());
+    }
+    let patid = patid.trim().to_string();
+    if patid.is_empty() {
+        return Ok(());
+    }
+    let Some((infoexport, bvs_section)) =
+        ini::read_archiv_infoexport_program(&ini::default_ini_path())?
+    else {
+        debug!("Kein Archiv-MMOINFEXPORT in VDDS_MMI.INI — ARCHIV-Verlinkung übersprungen");
+        return Ok(());
+    };
+    let marker = format!("Praxishub {doc_mmoid}");
+    let exchange = exchange_dir.to_path_buf();
+    let patid_for_lookup = patid.clone();
+
+    // Blockierender Prozessaufruf → aus dem async-Kontext auslagern. ConVis pullt
+    // die Datei i. d. R. synchron während des Pushs; ein kurzer zweiter Versuch
+    // fängt den (seltenen) verzögerten Pull ab.
+    let pa_mmoid = tokio::task::spawn_blocking(move || {
+        let target = media::VddsTarget::from_mmi_ini();
+        let once = || {
+            media::lookup_pa_mmoid(
+                &infoexport,
+                &target,
+                &bvs_section,
+                &exchange,
+                &patid_for_lookup,
+                &marker,
+            )
+        };
+        match once() {
+            Ok(None) => {
+                std::thread::sleep(Duration::from_secs(3));
+                once()
+            }
+            other => other,
+        }
+    })
+    .await
+    .map_err(|e| crate::error::ConnectorError::Vdds(format!("Lookup-Task abgebrochen: {e}")))??;
+
+    let Some(pa_mmoid) = pa_mmoid else {
+        warn!(doc = %doc_mmoid, "PA-MMOID nicht gefunden — ARCHIV-Verlinkung folgt nicht (Dokument liegt in PA)");
+        return Ok(());
+    };
+    let inserted =
+        crate::z1db::archiv::link_pa_document(cfg, &patid, &pa_mmoid, "Anamnesebogen", 13).await?;
+    if inserted {
+        info!(patid = %patid, mmoid = %pa_mmoid, "Z1-ARCHIV-Zeile geschrieben — Anamnese im Archiv-Reiter sichtbar");
+    } else {
+        debug!(patid = %patid, mmoid = %pa_mmoid, "Z1-ARCHIV-Zeile existiert bereits");
+    }
+    Ok(())
 }
 
 /// Passt das Dokument zum geöffneten Patienten? Zuerst PATID-Gleichheit; sonst

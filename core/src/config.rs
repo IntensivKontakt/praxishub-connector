@@ -150,6 +150,11 @@ pub struct ConnectorConfig {
     /// (wortwörtlich, als Flag) in die Risikoanamnese (`PAT.ANAMNESE`) schreiben.
     #[serde(default)]
     pub writeback_co_to_risk: bool,
+    /// Nach dem VDDS-Import die Z1-`ARCHIV`-Indexzeile schreiben (Nelly-Parität) —
+    /// macht die Anamnese im Z1-Karteireiter „Archiv" sichtbar. Braucht den
+    /// schreibfähigen Login. Siehe `z1db::archiv`.
+    #[serde(default)]
+    pub writeback_archiv_link: bool,
 }
 
 fn default_true() -> bool {
@@ -189,6 +194,7 @@ impl Default for ConnectorConfig {
             writeback_anamnese: false,
             writeback_new_patient: false,
             writeback_co_to_risk: false,
+            writeback_archiv_link: false,
         }
     }
 }
@@ -276,5 +282,15 @@ impl ConnectorConfig {
             || self.writeback_anamnese
             || self.writeback_new_patient
             || self.writeback_co_to_risk
+    }
+
+    /// Schreibfähiger Z1-Login konfiguriert (unabhängig von den Toggles)?
+    /// Für die ARCHIV-Verlinkung, die in der Dokumenten-Schleife läuft und
+    /// keinen Writeback-Loop braucht.
+    pub fn z1db_write_login_configured(&self) -> bool {
+        !self.z1_db_server.is_empty()
+            && !self.z1_db_database.is_empty()
+            && !self.z1_db_write_user.is_empty()
+            && !self.z1_db_write_password.is_empty()
     }
 }

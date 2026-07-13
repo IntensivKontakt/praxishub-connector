@@ -141,9 +141,21 @@ Join `PAT` + folgende Tabellen:
   ANTWORTART, CONTROL, PFLICHT). Ausgefüllte Bögen je Patient via `PATINFO`.
 - `EINWILLIGUNG` = Einwilligungen (`EINWILLIGUNGART`, `UNTERSCHRIFTDATUM/-ART`,
   `WIDERRUFDATUM`, `LFDARCHIV`, `DOKUMENTKEY`) → verlinkt auf `ARCHIV`.
-- **`ARCHIV`** = Dokument-Index je Patient: `PATNR`, `LFDARCHIV`, `OBJEKTART`,
-  `OBJEKTDATUM`, `OBJEKTBESCHREIBUNG`, **`BVS`, `MMOID`** (VDDS-media-Kennungen),
-  `EPAUNIQUEID`. Der unterstützte VDDS/BVS-Ablageweg registriert Dokumente hier.
+- **`ARCHIV`** = Dokument-Index je Patient: `PATNR`(10, rechtsbündig), `LFDARCHIV`(4,
+  rechtsbündig, je Patient max+1), `OBJEKTART`(überall leer), `OBJEKTDATUM`,
+  `OBJEKTBESCHREIBUNG`(50), `EXTERNOBJEKTART` (= **VDDS-Tabelle-15-Typnr**, z. B.
+  10=Formular, 13=Anamnesebogen), `BVS`, `MMOID`, `EXTERNARCHIVID`(11, rechtsbündig,
+  = PA-fileID+Seite), `PRAXISID`(3)/`EXTERNPRAXISID`(5)=1, `EPAUNIQUEID`.
+  **NUR was hier steht, erscheint im Z1-Karteireiter „Archiv".** Wer schreibt hier:
+  Z1 selbst bei BVS-Erfassung aus Z1 heraus (`BVS=PAVDTQ_Scanner/CONVIS_PRAXISARCHIV/…`,
+  `MMOID=archiv/fileID/seite` ins PA), **Nelly** über die interne
+  `CZ1Archiv::AblageDocument`-API (2749 Zeilen „Anamnesebogen", `BVS` leer,
+  `EXTERNOBJEKTART=13`, 12/2024–08.07.2026). **Unser MMOINFIMPORT-Push erzeugt KEINE
+  Zeile** — ConVis importiert nur ins PA (Register „VDDS-media Importmodul") und meldet
+  nichts an Z1. Deshalb schreibt der Connector die Zeile seit v0.2.26 selbst
+  (`z1db/archiv.rs`, Toggle `writeback_archiv_link`): PA-`MMOID` per **MMO-Info-Export**
+  (`MmoInfEx.exe`, read-only, Korrelation über `COMMENT=Praxishub <doc-id>`) suchen,
+  dann Nelly-Paritäts-INSERT.
 - `KOMLEMAIL` = KIM-Mails in Z1 (Spalte `DIENSTKENNUNG`) — die rohe ANW-Nachricht läge
   also sogar hier; für das Status-Tracking aber nicht nötig.
 
@@ -154,9 +166,13 @@ Behandlungsdaten in Z1 geschrieben werden? — **Technisch ja; der saubere Weg h
 Datentyp ab.**
 
 **A. Dokumente (Anamnese-PDF, Einwilligung) → VDDS-media (sanktioniert, bereits gebaut).**
-Der Connector legt das unterschriebene PDF über VDDS-media/BVS in die Akte; Z1 registriert
-es selbst in `ARCHIV`. Für viele Praxen ist „Anamnese-PDF in der Akte" bereits das Ziel.
-**Das ist der empfohlene Schreibweg.**
+Der Connector legt das unterschriebene PDF über VDDS-media/BVS in die Akte (PraxisArchiv).
+**Korrektur (2026-07-13, live verifiziert):** Z1 registriert VDDS-Importe NICHT selbst in
+`ARCHIV` — das Dokument landet nur im PA (Register „VDDS-media Importmodul") und ist im
+Z1-Karteireiter „Archiv" unsichtbar. Nelly löste das über die interne Z1-API; der
+Connector schreibt die `ARCHIV`-Indexzeile seit v0.2.26 selbst nach (§6, Toggle
+`writeback_archiv_link`). **VDDS bleibt der Dokument-Schreibweg**, die Indexzeile ist
+der notwendige Zusatz.
 
 **B. Strukturierte Felder in EXISTIERENDE Datensätze schreiben (z. B. Kontaktdaten in
 `ADR`) → verifiziert machbar & umkehrbar.** Am 2026-07-07 getestet (Patient 16006,

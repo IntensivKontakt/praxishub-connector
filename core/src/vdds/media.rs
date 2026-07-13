@@ -60,8 +60,21 @@ impl DocumentKind {
         match self {
             // Heil- und Kostenplan (Tabelle 15, Nr. 14).
             DocumentKind::Hkp => ("Heil- und Kostenplan", 14),
-            // Anamnesebogen → Formular (Tabelle 15, Nr. 10).
-            DocumentKind::Anamnese => ("Formular", 10),
+            // Anamnesebogen (Tabelle 15, Nr. 13) — verifiziert am Live-Z1: Nellys
+            // ARCHIV-Zeilen tragen EXTERNOBJEKTART=13 („Anamnesebogen"); Nr. 10
+            // wird in PraxisArchiv als „Formular (AU, Rezept, Erfassungsschein)"
+            // angezeigt und war der Grund für den falschen Dokumenttyp.
+            DocumentKind::Anamnese => ("Anamnesebogen", 13),
+        }
+    }
+
+    /// Rückfall-Typ, falls das PVS den primären `TYPENR` ablehnt (ältere
+    /// ConVis-Typtabellen): Anamnese fällt auf „Formular" (Nr. 10) zurück,
+    /// womit der Import nachweislich funktioniert.
+    fn media_type_fallback(self) -> Option<(&'static str, u32)> {
+        match self {
+            DocumentKind::Anamnese => Some(("Formular", 10)),
+            DocumentKind::Hkp => None,
         }
     }
 
@@ -142,9 +155,14 @@ impl VddsTarget {
 /// mitschicken. Stattdessen holt der PVS die Datei nach dem Push per **Pull über
 /// unser MMOEXPORT** (Tabelle 8/9) ab, identifiziert über genau diese `mmoid`
 /// (siehe [`handle_export_request`]).
-pub fn build_mmo_ini(req: &ImportRequest, target: &VddsTarget, mmoid: &str) -> String {
+pub fn build_mmo_ini(
+    req: &ImportRequest,
+    target: &VddsTarget,
+    mmoid: &str,
+    media_type: (&str, u32),
+) -> String {
     let p = req.patient;
-    let (def_type, def_typenr) = req.kind.media_type();
+    let (def_type, def_typenr) = media_type;
 
     // ── DIAGNOSE-OVERRIDES (Z1-Pilot) ──────────────────────────────────────────
     // ConVis crasht in CGData.Convert (String.Substring out-of-range) beim Parsen
@@ -163,8 +181,10 @@ pub fn build_mmo_ini(req: &ImportRequest, target: &VddsTarget, mmoid: &str) -> S
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "PDF".to_string());
     let colortype = diag("PRAXISHUB_DIAG_COLORTYPE").unwrap_or_else(|| "LINEART".to_string());
-    // Default jetzt ASCII (kein Umlaut) — falls CGData.Convert über das „ü" stolpert.
-    let comment = diag("PRAXISHUB_DIAG_COMMENT").unwrap_or_else(|| "Praxishub".to_string());
+    // ASCII (kein Umlaut, CGData.Convert-sicher). Enthält die MMOID: ConVis
+    // speichert das COMMENT-Feld und liefert es im MMO-Info-Export zurück —
+    // darüber findet der Connector das Dokument fürs Z1-ARCHIV-Verlinken wieder.
+    let comment = diag("PRAXISHUB_DIAG_COMMENT").unwrap_or_else(|| format!("Praxishub {mmoid}"));
     // TIME neu als Default (HH:MM, Tabelle 7 „empfohlen") — falls das fehlende Feld
     // den Substring-Crash auslöst.
     let time = diag("PRAXISHUB_DIAG_TIME")
@@ -212,11 +232,16 @@ pub fn build_mmo_ini(req: &ImportRequest, target: &VddsTarget, mmoid: &str) -> S
 
 /// Schreibt die Austausch-INI ins (konfigurierte) Austausch-Verzeichnis und gibt
 /// ihren Pfad zurück. `exchange_dir` = `ConnectorConfig::exchange_dir_path()`.
-fn write_exchange_ini(req: &ImportRequest, exchange_dir: &Path, mmoid: &str) -> Result<PathBuf> {
+fn write_exchange_ini(
+    req: &ImportRequest,
+    exchange_dir: &Path,
+    mmoid: &str,
+    media_type: (&str, u32),
+) -> Result<PathBuf> {
     std::fs::create_dir_all(exchange_dir)?;
     let path = exchange_dir.join("VDDS_MMO.INI");
     let target = VddsTarget::from_mmi_ini();
-    let text = build_mmo_ini(req, &target, mmoid);
+    let text = build_mmo_ini(req, &target, mmoid, media_type);
     let (bytes, _, _) = WINDOWS_1252.encode(&text);
     std::fs::write(&path, bytes)?;
     Ok(path)
@@ -253,8 +278,9 @@ fn run_import(
     req: &ImportRequest,
     exchange_dir: &Path,
     mmoid: &str,
+    media_type: (&str, u32),
 ) -> Result<bool> {
-    let ini_path = write_exchange_ini(req, exchange_dir, mmoid)?;
+    let ini_path = write_exchange_ini(req, exchange_dir, mmoid, media_type)?;
     // Dokumentkopie für den MMOEXPORT-Pull bereitlegen (ConVis holt sie ab).
     stage_pdf(req.pdf_path, exchange_dir, mmoid)?;
     // Konvention: `<programm> <pfad-zur-MMO.ini>` — exakte CLI-Signatur am Z1 verifizieren.
@@ -315,8 +341,8 @@ pub fn import_once_diagnostic(
             req.pdf_path.display()
         )));
     }
-    let sent_ini = build_mmo_ini(req, &VddsTarget::from_mmi_ini(), mmoid);
-    let ini_path = write_exchange_ini(req, exchange_dir, mmoid)?;
+    let sent_ini = build_mmo_ini(req, &VddsTarget::from_mmi_ini(), mmoid, req.kind.media_type());
+    let ini_path = write_exchange_ini(req, exchange_dir, mmoid, req.kind.media_type())?;
     // Dokumentkopie für den MMOEXPORT-Pull bereitlegen (ConVis holt sie ab).
     stage_pdf(req.pdf_path, exchange_dir, mmoid)?;
     let status = std::process::Command::new(import_program)
@@ -380,9 +406,20 @@ pub fn file_document(
 
     // MMOINFIMPORT ordnet AUSSCHLIESSLICH über die PATID zu — Tabelle 5 kennt keinen
     // Namens-/Geburtsdatum-Match. Greift die PATID nicht, bleibt nur Variante A.
-    if req.patient.has_patid() && run_import(import_program, req, exchange_dir, mmoid)? {
-        tracing::info!(patid = %req.patient.patient_id, "VDDS-media: Dokument per PATID abgelegt");
-        return Ok(FilingOutcome::Filed { matched_by: "patient_id" });
+    if req.patient.has_patid() {
+        if run_import(import_program, req, exchange_dir, mmoid, req.kind.media_type())? {
+            tracing::info!(patid = %req.patient.patient_id, "VDDS-media: Dokument per PATID abgelegt");
+            return Ok(FilingOutcome::Filed { matched_by: "patient_id" });
+        }
+        // Ablehnung kann am (neueren) TYPENR liegen — einmal mit dem
+        // Rückfall-Typ nachfassen, bevor das Dokument zurückgestellt wird.
+        if let Some(fallback) = req.kind.media_type_fallback() {
+            if run_import(import_program, req, exchange_dir, mmoid, fallback)? {
+                tracing::info!(patid = %req.patient.patient_id, typ = fallback.0,
+                    "VDDS-media: Dokument per PATID abgelegt (Rückfall-Typ)");
+                return Ok(FilingOutcome::Filed { matched_by: "patient_id" });
+            }
+        }
     }
 
     // Variante A: offen lassen, bis Z1 den Patienten öffnet und uns die PATID übergibt.
@@ -424,6 +461,76 @@ pub fn is_media_invocation(arg: &str) -> bool {
 /// per MMOEXPORT ab und findet sie unter genau diesem Namen im Austauschordner.
 pub fn mmo_pdf_name(mmoid: &str) -> String {
     format!("praxishub_mmo_{mmoid}.pdf")
+}
+
+// ── MMO-Info-Export: PA-Dokument-ID nach dem Import wiederfinden ─────────────
+
+/// Fragt das **MMOINFEXPORT**-Modul des PraxisArchivs (ConVis `MmoInfEx.exe`)
+/// nach allen abgelegten Objekten eines Patienten und liefert die PA-`MMOID`
+/// (Format `archiv/fileID/seite`, z. B. `1/119649/1`) des Objekts, dessen
+/// `COMMENT` exakt `marker` ist — unser Push schreibt dort `Praxishub <mmoid>`
+/// hinein. Read-only (VDDS-media Info-Export); live am Z1-Pilot verifiziert.
+pub fn lookup_pa_mmoid(
+    infoexport_program: &Path,
+    target: &VddsTarget,
+    bvs_archiv_section: &str,
+    exchange_dir: &Path,
+    patid: &str,
+    marker: &str,
+) -> Result<Option<String>> {
+    std::fs::create_dir_all(exchange_dir)?;
+    let path = exchange_dir.join("praxishub_mmoinfex.ini");
+    let mut s = String::new();
+    s.push_str("[PATID]\r\n");
+    s.push_str(&format!("PVS={}\r\n", target.pvs_section));
+    s.push_str(&format!("BVS={bvs_archiv_section}\r\n"));
+    s.push_str(&format!("FROMPVS={}\r\n", target.from_pvs_section));
+    s.push_str(&format!("PRXNR={}\r\n", target.prxnr));
+    s.push_str(&format!("PATID={}\r\n", patid.trim()));
+    s.push_str("ERRORLEVEL=0\r\n");
+    s.push_str("READY=0\r\n");
+    let (bytes, _, _) = WINDOWS_1252.encode(&s);
+    std::fs::write(&path, bytes)?;
+
+    let status = std::process::Command::new(infoexport_program)
+        .arg(&path)
+        .status()
+        .map_err(|e| ConnectorError::Vdds(format!("MMOINFEXPORT nicht startbar: {e}")))?;
+    if !import_succeeded(&path, status.success()) {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(&path)?;
+    let (text, _, _) = WINDOWS_1252.decode(&bytes);
+    Ok(find_mmoid_by_comment(&text, marker))
+}
+
+/// Sucht in einer MMO-Info-Export-Antwort (Tabellen 6/7) das Objekt mit exakt
+/// passendem `COMMENT` und liefert dessen `MMOID`. Bei mehreren Treffern gewinnt
+/// die höchste Datei-ID (neueste Version).
+fn find_mmoid_by_comment(ini_text: &str, marker: &str) -> Option<String> {
+    let ini = crate::vdds::ini::Ini::parse(ini_text);
+    let count: usize = ini.get("MMOS", "COUNT").and_then(|c| c.trim().parse().ok()).unwrap_or(0);
+    let file_id = |mmoid: &str| -> i64 {
+        mmoid.split('/').nth(1).and_then(|s| s.trim().parse().ok()).unwrap_or(0)
+    };
+    let mut best: Option<String> = None;
+    for i in 1..=count {
+        let sec = format!("MMO{i}");
+        let comment = ini.get(&sec, "COMMENT").map(str::trim).unwrap_or("");
+        if comment != marker.trim() {
+            continue;
+        }
+        let Some(mmoid) = ini.get(&sec, "MMOID").map(|s| s.trim().to_string()) else {
+            continue;
+        };
+        if mmoid.is_empty() {
+            continue;
+        }
+        if best.as_deref().map(file_id).unwrap_or(-1) < file_id(&mmoid) {
+            best = Some(mmoid);
+        }
+    }
+    best
 }
 
 /// Ist die übergebene Austausch-INI ein **MMOEXPORT-Abruf** der PVS (Tabelle 8)?
@@ -621,7 +728,7 @@ mod tests {
         let patient = patient_full();
         let pdf = PathBuf::from("C:\\tmp\\anamnese.pdf");
         let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Anamnese };
-        let ini = build_mmo_ini(&req, &test_target(), "PH-TEST");
+        let ini = build_mmo_ini(&req, &test_target(), "PH-TEST", req.kind.media_type());
         // Kopfsektion: Zuordnung NUR über PATID, mit PVS/BVS/FROMPVS/PRXNR.
         assert!(ini.contains("[PATID]\r\nPVS=CDP_Z1\r\n"));
         assert!(ini.contains("PATID=4711"));
@@ -633,7 +740,10 @@ mod tests {
         assert!(ini.contains("COUNT=1"));
         assert!(ini.contains("[MMO1]"));
         assert!(ini.contains("MMOID=PH-TEST"));
-        assert!(ini.contains("TYPENR=10")); // Formular
+        assert!(ini.contains("TYPE=Anamnesebogen"));
+        assert!(ini.contains("TYPENR=13")); // Anamnesebogen (nicht mehr Formular/10)
+        // COMMENT trägt die MMOID als Korrelationsanker für den Info-Export.
+        assert!(ini.contains("COMMENT=Praxishub PH-TEST"));
         assert!(ini.contains("EXT=PDF"));
         assert!(ini.contains("COLORTYPE=LINEART"));
         // KEIN IMAGEDATA (ConVis hat keinen DIRECTIMAGEIMPORT → Pull via MMOEXPORT).
@@ -651,10 +761,38 @@ mod tests {
         let patient = patient_full();
         let pdf = PathBuf::from("C:\\tmp\\hkp.pdf");
         let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Hkp };
-        let ini = build_mmo_ini(&req, &test_target(), "PH-TEST");
+        let ini = build_mmo_ini(&req, &test_target(), "PH-TEST", req.kind.media_type());
         assert!(ini.contains("TYPENR=14")); // Heil- und Kostenplan
         assert!(ini.contains("TYPE=Heil- und Kostenplan"));
         assert!(ini.contains("EXT=PDF"));
+    }
+
+    #[test]
+    fn anamnese_hat_formular_als_rueckfall_typ() {
+        assert_eq!(DocumentKind::Anamnese.media_type_fallback(), Some(("Formular", 10)));
+        assert_eq!(DocumentKind::Hkp.media_type_fallback(), None);
+    }
+
+    #[test]
+    fn mmoid_wird_ueber_comment_gefunden() {
+        // Realistische MMO-Info-Export-Antwort (Struktur wie am Live-Z1 gesehen).
+        let ini = "[PATID]\r\nPATID=16006\r\nERRORLEVEL=0\r\nREADY=1\r\n\
+            [MMOS]\r\nCOUNT=3\r\n\
+            [MMO1]\r\nMMOID=1/119167/1\r\nTYPENR=10\r\nCOMMENT=Praxishub abc-123\r\n\
+            [MMO2]\r\nMMOID=1/119651/1\r\nTYPENR=10\r\nCOMMENT=Praxishub xyz-999\r\n\
+            [MMO3]\r\nMMOID=1/99161/1\r\nTYPENR=8\r\nCOMMENT=\r\n";
+        assert_eq!(find_mmoid_by_comment(ini, "Praxishub xyz-999"), Some("1/119651/1".into()));
+        assert_eq!(find_mmoid_by_comment(ini, "Praxishub abc-123"), Some("1/119167/1".into()));
+        assert_eq!(find_mmoid_by_comment(ini, "Praxishub fehlt"), None);
+    }
+
+    #[test]
+    fn mmoid_bei_mehreren_treffern_gewinnt_neueste_datei() {
+        // Doppelt importiert (z. B. Retry): die höhere Datei-ID ist die neueste.
+        let ini = "[MMOS]\r\nCOUNT=2\r\n\
+            [MMO1]\r\nMMOID=1/100/1\r\nCOMMENT=Praxishub doc-1\r\n\
+            [MMO2]\r\nMMOID=1/200/1\r\nCOMMENT=Praxishub doc-1\r\n";
+        assert_eq!(find_mmoid_by_comment(ini, "Praxishub doc-1"), Some("1/200/1".into()));
     }
 
     // Die Kaskade über echte Prozessaufrufe testen wir mit /usr/bin/true|false

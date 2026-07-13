@@ -6,6 +6,8 @@
 //!   * Kontakt/Adresse → `UPDATE ADR` (bestehende Zeile)
 //!   * CAVE/Allergien  → additiv an `PAT.ANAMNESE` (Risikoanamnese, `varchar(80)`)
 //!   * Krankenanamnese → `INSERT INTO PATINFO` (ART=1) — exakt wie Nelly
+//!   * Archiv-Index    → `INSERT INTO ARCHIV` (Anamnese-PDF im „Archiv"-Reiter,
+//!                       Nelly-Parität) — siehe [`archiv`]
 //!
 //! Eigenständige Hintergrund-Schleifen (analog `documents::spawn`):
 //!   * [`hkp::spawn`]       — liest neue HKP-Entscheidungen aus `EBZ` + Voll-HKP aus
@@ -20,6 +22,7 @@
 //! Zeilenzahl-Assertion, `RINFO` app-treu setzen. Jede Fähigkeit ist per Toggle
 //! einzeln aktivierbar.
 
+pub mod archiv;
 pub mod bootstrap;
 pub mod client;
 pub mod control;

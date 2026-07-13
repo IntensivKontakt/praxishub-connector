@@ -210,6 +210,37 @@ pub fn pvs_import_program(ini: &Ini) -> Option<PathBuf> {
     }
 }
 
+/// Liest das **MMOINFEXPORT**-Modul des Archiv-BVS (PraxisArchiv/ConVis) aus
+/// einer echten `VDDS_MMI.INI`: erst `[BVS].ARCHIV`, sonst der erste
+/// `[BVS].NAMEk`-Eintrag (außer uns selbst) mit `MMOINFEXPORT`. Liefert
+/// `(Programm, Sektionsname)` — der Sektionsname gehört als `BVS=` in die
+/// Anfrage. `Ok(None)` = kein Archiv-Info-Export verfügbar.
+pub fn read_archiv_infoexport_program(ini_path: &Path) -> Result<Option<(PathBuf, String)>> {
+    Ok(archiv_infoexport_program(&read_ini(ini_path)?))
+}
+
+/// In-Memory-Auflösung für [`read_archiv_infoexport_program`] (unit-testbar).
+pub fn archiv_infoexport_program(ini: &Ini) -> Option<(PathBuf, String)> {
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(a) = ini.get(BVS_INDEX, "ARCHIV") {
+        candidates.push(a.trim().to_string());
+    }
+    for i in 1..=9 {
+        if let Some(n) = ini.get(BVS_INDEX, &format!("NAME{i}")) {
+            candidates.push(n.trim().to_string());
+        }
+    }
+    for sec in candidates {
+        if sec.is_empty() || sec.eq_ignore_ascii_case(SECTION) {
+            continue; // uns selbst überspringen
+        }
+        if let Some(prog) = ini.get(&sec, "MMOINFEXPORT").map(str::trim).filter(|p| !p.is_empty()) {
+            return Some((PathBuf::from(prog), sec));
+        }
+    }
+    None
+}
+
 // ── Minimaler INI-Parser (Reihenfolge-erhaltend) ─────────────────────────────
 
 #[derive(Default)]
@@ -368,6 +399,39 @@ NAME=Erfassung über PraxisArchiv - ConVis\r\n";
             pvs_import_program(&ini),
             Some(PathBuf::from("C:\\CGM\\PRAXIS~1\\Client\\VDDS\\MmoInfIm.exe"))
         );
+    }
+
+    #[test]
+    fn liest_archiv_mmoinfexport_aus_bvs_sektionen() {
+        // Struktur wie die echte Praxis-INI: [BVS] ARCHIV= + NAMEk-Sektionen,
+        // unsere eigene PRAXISHUB-Sektion (ohne/mit MMOEXPORT) wird übersprungen.
+        let text = "[BVS]\r\n\
+ARCHIV=BVS_ARCHIV\r\n\
+NAME1=CONVIS_PRAXISARCHIV\r\n\
+NAME3=PRAXISHUB\r\n\
+[BVS_ARCHIV]\r\n\
+MMOINFEXPORT=C:\\CGM\\PRAXIS~1\\Client\\VDDS\\MmoInfEx.exe\r\n\
+[CONVIS_PRAXISARCHIV]\r\n\
+MMOINFEXPORT=C:\\CGM\\PRAXIS~1\\Client\\VDDS\\MmoInfEx.exe\r\n\
+[PRAXISHUB]\r\n\
+NAME=Praxishub Connector\r\n";
+        let ini = Ini::parse(text);
+        let (prog, sec) = archiv_infoexport_program(&ini).expect("Archiv-Info-Export erwartet");
+        assert_eq!(prog, PathBuf::from("C:\\CGM\\PRAXIS~1\\Client\\VDDS\\MmoInfEx.exe"));
+        assert_eq!(sec, "BVS_ARCHIV");
+        // Ohne ARCHIV=-Eintrag greift der erste NAMEk mit MMOINFEXPORT.
+        let text2 = "[BVS]\r\n\
+NAME1=PRAXISHUB\r\n\
+NAME2=CONVIS_PRAXISARCHIV\r\n\
+[PRAXISHUB]\r\n\
+NAME=Praxishub Connector\r\n\
+[CONVIS_PRAXISARCHIV]\r\n\
+MMOINFEXPORT=X:\\MmoInfEx.exe\r\n";
+        let (prog2, sec2) = archiv_infoexport_program(&Ini::parse(text2)).unwrap();
+        assert_eq!(prog2, PathBuf::from("X:\\MmoInfEx.exe"));
+        assert_eq!(sec2, "CONVIS_PRAXISARCHIV");
+        // Gar kein Kandidat → None.
+        assert!(archiv_infoexport_program(&Ini::parse("[BVS]\r\nNAME1=PRAXISHUB\r\n")).is_none());
     }
 
     #[test]
