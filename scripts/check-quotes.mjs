@@ -8,8 +8,11 @@
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+// fileURLToPath, nicht .pathname: unter Windows liefert .pathname "/D:/a/..." —
+// daraus baut join() den Unsinn "D:\D:\a\...". Unter macOS faellt das nicht auf.
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const TARGETS = ["src", "index.html"];
 const EXTS = [".ts", ".tsx", ".html"];
 
