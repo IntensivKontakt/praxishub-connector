@@ -149,7 +149,7 @@ function renderWizard() {
       <div class="field">
         <label>Verbindungscode aus dem Praxishub-Dashboard</label>
         <textarea id="code" placeholder="Code hier einfügen …"></textarea>
-        <p class="hint">Dashboard → Einstellungen → Connector → „Verbindungscode erzeugen". Kein Abtippen von Schlüsseln nötig.</p>
+        <p class="hint">Dashboard → Einstellungen → Connector → „Verbindungscode erzeugen“. Kein Abtippen von Schlüsseln nötig.</p>
       </div>
       <button id="apply_code">Code übernehmen</button>
 
@@ -168,7 +168,7 @@ function renderWizard() {
 
     <section>
       <h2>2 · KIM-Postfach</h2>
-      <p class="sub" style="margin-bottom:12px">Zugangsdaten aus dem KIM-Clientmodul („Kontoinformationen").</p>
+      <p class="sub" style="margin-bottom:12px">Zugangsdaten aus dem KIM-Clientmodul („Kontoinformationen“).</p>
       <div class="row">
         <div class="field"><label>Host</label><input id="kim_host" value="127.0.0.1" /></div>
         <div class="field"><label>POP3-Port</label><input id="kim_port" value="995" /></div>
@@ -241,13 +241,13 @@ function collectFromWizard(): ConnectorConfig {
     writeback_cave: hasEl("writeback_cave") ? checked("writeback_cave") : cfg.writeback_cave,
     writeback_anamnese: hasEl("writeback_anamnese") ? checked("writeback_anamnese") : cfg.writeback_anamnese,
     // Notiz-Kanal hat keinen eigenen Schalter — er wird vom Modul „Rechnungen im
-    // PVS ablegen" automatisch mit aktiviert (Karteikarten-Statusnotizen).
+    // PVS ablegen“ automatisch mit aktiviert (Karteikarten-Statusnotizen).
     writeback_notes: hasEl("pvs_file_invoices") ? checked("pvs_file_invoices") : cfg.writeback_notes,
     pvs_file_invoices: hasEl("pvs_file_invoices") ? checked("pvs_file_invoices") : cfg.pvs_file_invoices,
     writeback_new_patient: hasEl("writeback_new_patient") ? checked("writeback_new_patient") : cfg.writeback_new_patient,
     writeback_co_to_risk: hasEl("writeback_co_to_risk") ? checked("writeback_co_to_risk") : cfg.writeback_co_to_risk,
     // Das Rechnungs-Modul aktiviert die Archiv-Anzeige zwingend mit (sonst läge der
-    // Beleg nur im PraxisArchiv, unsichtbar im Z1-Karteireiter „Archiv").
+    // Beleg nur im PraxisArchiv, unsichtbar im Z1-Karteireiter „Archiv“).
     writeback_archiv_link:
       hasEl("pvs_file_invoices") && checked("pvs_file_invoices")
         ? true
@@ -435,11 +435,11 @@ function renderDashboard() {
       <label class="check"><input type="checkbox" id="writeback_address" /> Anschrift <span class="hint">(überschreibt die vorhandene Adresse)</span></label>
       <label class="check"><input type="checkbox" id="writeback_cave" /> Allergien &amp; Warnhinweise <span class="hint">(als Risikoanamnese)</span></label>
       <label class="check"><input type="checkbox" id="writeback_anamnese" /> Krankengeschichte / Anamnese</label>
-      <label class="check"><input type="checkbox" id="writeback_archiv_link" /> Abgelegte Dokumente im Karteireiter „Archiv" anzeigen</label>
+      <label class="check"><input type="checkbox" id="writeback_archiv_link" /> Abgelegte Dokumente im Karteireiter „Archiv“ anzeigen</label>
 
       <h3>Rechnungen im PVS ablegen</h3>
-      <p class="sub" style="margin-bottom:10px">Rechnungen und Stornos aus dem Praxishub-Rechnungsmodul ins PVS-Archiv legen und den Zahlungsstatus in der Karteikarte vermerken. Braucht den schreibfähigen Login. Aktiviert die Anzeige im Karteireiter „Archiv" und die Statusnotiz automatisch mit.</p>
-      <label class="check"><input type="checkbox" id="pvs_file_invoices" /> Rechnungen &amp; Stornos im PVS ablegen <span class="hint">(vermerkt „bezahlt/offen" automatisch in der Karteikarte)</span></label>
+      <p class="sub" style="margin-bottom:10px">Rechnungen und Stornos aus dem Praxishub-Rechnungsmodul ins PVS-Archiv legen und den Zahlungsstatus in der Karteikarte vermerken. Braucht den schreibfähigen Login. Aktiviert die Anzeige im Karteireiter „Archiv“ und die Statusnotiz automatisch mit.</p>
+      <label class="check"><input type="checkbox" id="pvs_file_invoices" /> Rechnungen &amp; Stornos im PVS ablegen <span class="hint">(vermerkt „bezahlt/offen“ automatisch in der Karteikarte)</span></label>
 
       <details class="collapsible" style="margin-top:14px">
         <summary>Erweiterte Rückschreib-Optionen</summary>
@@ -448,7 +448,7 @@ function renderDashboard() {
       </details>
 
       <h3 style="margin-top:20px">Praxis-Steuerung (Umsatz- &amp; Leistungs-Sync)</h3>
-      <p class="sub" style="margin-bottom:10px">Liest einmal täglich aggregierte Umsatz-/Abrechnungsdaten (read-only) und speist das Modul „Praxis-Steuerung" in Praxishub. Nur Aggregate, keine Klartext-Patientendaten. War der PC nachts aus, wird der Lauf morgens nachgeholt.</p>
+      <p class="sub" style="margin-bottom:10px">Liest einmal täglich aggregierte Umsatz-/Abrechnungsdaten (read-only) und speist das Modul „Praxis-Steuerung“ in Praxishub. Nur Aggregate, keine Klartext-Patientendaten. War der PC nachts aus, wird der Lauf morgens nachgeholt.</p>
       <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="z1_control_enabled" /> Umsatz-/Leistungs-Sync aktivieren</label>
       <div class="row">
         <div class="field"><label>Früheste Stunde (0–23, Standard 3)</label><input id="z1_control_hour" placeholder="3" /></div>
@@ -480,8 +480,8 @@ function renderDashboard() {
   $("#save2").addEventListener("click", saveFromDashboard);
 }
 
-/** Modul „Rechnungen im PVS ablegen" zieht die Archiv-Anzeige zwingend mit:
- *  ist es an, wird „Dokumente im Archiv anzeigen" angehakt und gesperrt. */
+/** Modul „Rechnungen im PVS ablegen“ zieht die Archiv-Anzeige zwingend mit:
+ *  ist es an, wird „Dokumente im Archiv anzeigen“ angehakt und gesperrt. */
 function syncInvoiceModule() {
   const inv = $("#pvs_file_invoices") as HTMLInputElement | null;
   const arch = $("#writeback_archiv_link") as HTMLInputElement | null;
@@ -491,7 +491,7 @@ function syncInvoiceModule() {
     if (arch.dataset.prev === undefined) arch.dataset.prev = arch.checked ? "1" : "0";
     arch.checked = true;
     arch.disabled = true;
-    arch.title = "Durch „Rechnungen im PVS ablegen" automatisch aktiviert";
+    arch.title = "Durch „Rechnungen im PVS ablegen“ automatisch aktiviert";
   } else {
     // Modul aus → gemerkten Zustand wiederherstellen (nicht fälschlich angehakt lassen).
     if (arch.dataset.prev !== undefined) {
