@@ -1,0 +1,6 @@
+#!/bin/sh
+# Aktivieren mit:  git config core.hooksPath .githooks
+node scripts/check-quotes.mjs || {
+  echo "Commit abgebrochen. Mit 'git commit --no-verify' erzwingbar."
+  exit 1
+}

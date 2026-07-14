@@ -6,6 +6,8 @@
   "description": "On-Prem-Brücke zwischen Praxishub-Cloud und Praxis-PVS (VDDS-media + KIM/EBZ).",
   "scripts": {
     "dev": "vite",
+    "lint:quotes": "node scripts/check-quotes.mjs",
+    "prebuild": "npm run lint:quotes",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
