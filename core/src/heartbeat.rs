@@ -25,6 +25,9 @@ pub fn spawn(cfg: ConnectorConfig, status: SharedStatus) -> LoopHandle {
             }
         };
         let hkp_db = cfg.z1db_read_ready();
+        // Gemeldete Dokument-Capabilities (config-abhängig, ändert sich im
+        // Loop-Leben nicht) — einmal berechnen.
+        let doc_kinds = cfg.supported_document_kinds();
         let mut ticker = tokio::time::interval(Duration::from_secs(60));
         loop {
             tokio::select! {
@@ -32,7 +35,7 @@ pub fn spawn(cfg: ConnectorConfig, status: SharedStatus) -> LoopHandle {
                     let vdds_ok = status.snapshot().vdds.state == Health::Ok;
                     // kim_watching=false (Weg abgelöst); last_error=None (KIM-Timeouts
                     // sollen nicht mehr als Fehler erscheinen).
-                    match cloud.heartbeat(vdds_ok, false, hkp_db, None).await {
+                    match cloud.heartbeat(vdds_ok, false, hkp_db, &doc_kinds, None).await {
                         Ok(()) => status.set_cloud(Component::new(Health::Ok, "verbunden")),
                         Err(e) => status.set_cloud(Component::new(Health::Warn, format!("Cloud: {e}"))),
                     }

@@ -115,8 +115,9 @@ impl Watcher {
                     // Heartbeat IMMER senden (auch bei Fehler) → Backend-Watchdog
                     // sieht sofort Stille (Dienst tot) oder gemeldete Fehler.
                     let vdds_ok = self.status.snapshot().vdds.state == Health::Ok;
+                    let doc_kinds = self.cfg.supported_document_kinds();
                     // Legacy-KIM-Watcher (nicht mehr gestartet) – Heartbeat läuft jetzt eigenständig.
-                    match self.cloud.heartbeat(vdds_ok, true, false, last_error.as_deref()).await {
+                    match self.cloud.heartbeat(vdds_ok, true, false, &doc_kinds, last_error.as_deref()).await {
                         Ok(()) => self.status.set_cloud(Component::new(Health::Ok, "verbunden")),
                         Err(e) => self.status.set_cloud(Component::new(Health::Warn, format!("Cloud: {e}"))),
                     }

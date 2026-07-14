@@ -48,10 +48,14 @@ impl PatientContext {
 }
 
 /// Welche Art Dokument abgelegt wird (steuert ggf. Kategorie/Karteireiter).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocumentKind {
     Anamnese,
     Hkp,
+    /// Ausfall-/Privatrechnung o. ä. — Beleg-PDF aus dem Praxishub-Rechnungsmodul.
+    Rechnung,
+    /// Storno-/Gutschriftbeleg zu einer Rechnung.
+    Storno,
 }
 
 impl DocumentKind {
@@ -65,26 +69,61 @@ impl DocumentKind {
             // wird in PraxisArchiv als „Formular (AU, Rezept, Erfassungsschein)"
             // angezeigt und war der Grund für den falschen Dokumenttyp.
             DocumentKind::Anamnese => ("Anamnesebogen", 13),
+            // Rechnung (Tabelle 15, Nr. 12) — live am Z1/PraxisArchiv verifiziert:
+            // Rechnungs-PDFs liegen dort als Typ 12 „Rechnung" (COMMENT `F7015: …`).
+            // Tabelle 15 kennt KEINEN eigenen Storno-Typ; ein Storno ist eine
+            // Rechnungs-Variante und teilt sich Typ 12 (im ARCHIV über die
+            // OBJEKTBESCHREIBUNG „Stornorechnung" unterscheidbar, s. archiv_index).
+            DocumentKind::Rechnung | DocumentKind::Storno => ("Rechnung", 12),
         }
     }
 
     /// Rückfall-Typ, falls das PVS den primären `TYPENR` ablehnt (ältere
     /// ConVis-Typtabellen): Anamnese fällt auf „Formular" (Nr. 10) zurück,
-    /// womit der Import nachweislich funktioniert.
+    /// womit der Import nachweislich funktioniert. Für Rechnung/Storno gibt es
+    /// keinen Rückfall — Typ 12 ist live bestätigt.
     fn media_type_fallback(self) -> Option<(&'static str, u32)> {
         match self {
             DocumentKind::Anamnese => Some(("Formular", 10)),
+            DocumentKind::Hkp | DocumentKind::Rechnung | DocumentKind::Storno => None,
+        }
+    }
+
+    /// Wie das Dokument im Z1-`ARCHIV`-Index (Karteireiter „Archiv") erscheint:
+    /// `(OBJEKTBESCHREIBUNG, EXTERNOBJEKTART)`. `None` = nicht indexieren — ein
+    /// HKP entsteht in Z1 selbst und ist dort ohnehin sichtbar.
+    pub fn archiv_index(self) -> Option<(&'static str, u32)> {
+        match self {
+            DocumentKind::Anamnese => Some(("Anamnesebogen", 13)),
+            DocumentKind::Rechnung => Some(("Rechnung", 12)),
+            DocumentKind::Storno => Some(("Stornorechnung", 12)),
             DocumentKind::Hkp => None,
         }
     }
 
-    /// Aus der Backend-Kennung (`"anamnese"`/`"hkp"`); unbekannt → Anamnese.
-    pub fn from_tag(tag: &str) -> Self {
+    /// Aus der Backend-Kennung. `None` = **unbekannter, nicht-leerer** Typ — der
+    /// Aufrufer meldet das Dokument dann als `/failed` mit klarem Grund, statt es
+    /// (wie der alte `_`-Fallback) stillschweigend in den falschen Karteireiter zu
+    /// legen. Ein **leerer/fehlender** Tag bleibt dagegen der dokumentierte Default
+    /// „Anamnese": `PendingDocument.kind` ist `#[serde(default)]`, eine Alt-Cloud
+    /// aus der Zeit vor dem `kind`-Feld liefert gar keinen Wert — die darf nicht
+    /// brechen (Rückwärtskompatibilität).
+    pub fn from_tag(tag: &str) -> Option<Self> {
         match tag.trim().to_ascii_lowercase().as_str() {
-            "hkp" => DocumentKind::Hkp,
-            _ => DocumentKind::Anamnese,
+            "" | "anamnese" => Some(DocumentKind::Anamnese),
+            "hkp" => Some(DocumentKind::Hkp),
+            "rechnung" => Some(DocumentKind::Rechnung),
+            "storno" => Some(DocumentKind::Storno),
+            _ => None,
         }
     }
+
+    /// Alle Dokument-Kennungen, die der Connector-Binary parsen/ablegen kann.
+    /// **Synchron zu [`from_tag`] halten** (Test `supported_tags_sind_bekannt`).
+    /// Was der Cloud tatsächlich als unterstützt gemeldet wird, ist eine
+    /// config-abhängige Teilmenge davon (Modul „Rechnungen im PVS ablegen") —
+    /// siehe [`crate::config::ConnectorConfig::supported_document_kinds`].
+    pub const SUPPORTED_TAGS: &'static [&'static str] = &["anamnese", "hkp", "rechnung", "storno"];
 }
 
 pub struct ImportRequest<'a> {
@@ -771,6 +810,50 @@ mod tests {
     fn anamnese_hat_formular_als_rueckfall_typ() {
         assert_eq!(DocumentKind::Anamnese.media_type_fallback(), Some(("Formular", 10)));
         assert_eq!(DocumentKind::Hkp.media_type_fallback(), None);
+        assert_eq!(DocumentKind::Rechnung.media_type_fallback(), None);
+        assert_eq!(DocumentKind::Storno.media_type_fallback(), None);
+    }
+
+    #[test]
+    fn mmo_ini_rechnung_und_storno_nutzen_typenr_12() {
+        let patient = patient_full();
+        let pdf = PathBuf::from("C:\\tmp\\rechnung.pdf");
+        for kind in [DocumentKind::Rechnung, DocumentKind::Storno] {
+            let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind };
+            let ini = build_mmo_ini(&req, &test_target(), "PH-TEST", req.kind.media_type());
+            assert!(ini.contains("TYPENR=12"), "{kind:?} → Rechnung/Typ 12");
+            assert!(ini.contains("TYPE=Rechnung"));
+        }
+    }
+
+    #[test]
+    fn from_tag_kennt_bekannte_und_verwirft_unbekannte() {
+        assert_eq!(DocumentKind::from_tag("anamnese"), Some(DocumentKind::Anamnese));
+        assert_eq!(DocumentKind::from_tag(" HKP "), Some(DocumentKind::Hkp));
+        assert_eq!(DocumentKind::from_tag("Rechnung"), Some(DocumentKind::Rechnung));
+        assert_eq!(DocumentKind::from_tag("storno"), Some(DocumentKind::Storno));
+        // Unbekannt (nicht-leer) darf NICHT still auf Anamnese fallen → /failed.
+        assert_eq!(DocumentKind::from_tag("ueberweisung"), None);
+        // Leer/fehlend bleibt der dokumentierte Default „Anamnese" (Alt-Cloud ohne
+        // kind-Feld, PendingDocument.kind = #[serde(default)]) — Rückwärtskompat.
+        assert_eq!(DocumentKind::from_tag(""), Some(DocumentKind::Anamnese));
+        assert_eq!(DocumentKind::from_tag("   "), Some(DocumentKind::Anamnese));
+    }
+
+    #[test]
+    fn supported_tags_sind_bekannt() {
+        // Jede im Heartbeat gemeldete Capability muss auch parsebar sein (kein Drift).
+        for tag in DocumentKind::SUPPORTED_TAGS {
+            assert!(DocumentKind::from_tag(tag).is_some(), "SUPPORTED_TAG {tag:?} unbekannt in from_tag");
+        }
+    }
+
+    #[test]
+    fn archiv_index_pro_typ() {
+        assert_eq!(DocumentKind::Anamnese.archiv_index(), Some(("Anamnesebogen", 13)));
+        assert_eq!(DocumentKind::Rechnung.archiv_index(), Some(("Rechnung", 12)));
+        assert_eq!(DocumentKind::Storno.archiv_index(), Some(("Stornorechnung", 12)));
+        assert_eq!(DocumentKind::Hkp.archiv_index(), None); // HKP entsteht in Z1 selbst
     }
 
     #[test]

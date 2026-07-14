@@ -37,9 +37,11 @@ interface ConnectorConfig {
   writeback_address: boolean;
   writeback_cave: boolean;
   writeback_anamnese: boolean;
+  writeback_notes: boolean;
   writeback_new_patient: boolean;
   writeback_co_to_risk: boolean;
   writeback_archiv_link: boolean;
+  pvs_file_invoices: boolean;
   // Praxis-Steuerung: nächtlicher Umsatz-/Leistungs-Aggregat-Sync (opt-in)
   z1_control_enabled: boolean;
   z1_control_hour: number;
@@ -73,9 +75,11 @@ function blankConfig(): ConnectorConfig {
     writeback_address: false,
     writeback_cave: false,
     writeback_anamnese: false,
+    writeback_notes: false,
     writeback_new_patient: false,
     writeback_co_to_risk: false,
     writeback_archiv_link: false,
+    pvs_file_invoices: false,
     z1_control_enabled: false,
     z1_control_hour: 3,
     z1_control_months: 36,
@@ -236,9 +240,20 @@ function collectFromWizard(): ConnectorConfig {
     writeback_address: hasEl("writeback_address") ? checked("writeback_address") : cfg.writeback_address,
     writeback_cave: hasEl("writeback_cave") ? checked("writeback_cave") : cfg.writeback_cave,
     writeback_anamnese: hasEl("writeback_anamnese") ? checked("writeback_anamnese") : cfg.writeback_anamnese,
+    // Notiz-Kanal hat keinen eigenen Schalter — er wird vom Modul „Rechnungen im
+    // PVS ablegen" automatisch mit aktiviert (Karteikarten-Statusnotizen).
+    writeback_notes: hasEl("pvs_file_invoices") ? checked("pvs_file_invoices") : cfg.writeback_notes,
+    pvs_file_invoices: hasEl("pvs_file_invoices") ? checked("pvs_file_invoices") : cfg.pvs_file_invoices,
     writeback_new_patient: hasEl("writeback_new_patient") ? checked("writeback_new_patient") : cfg.writeback_new_patient,
     writeback_co_to_risk: hasEl("writeback_co_to_risk") ? checked("writeback_co_to_risk") : cfg.writeback_co_to_risk,
-    writeback_archiv_link: hasEl("writeback_archiv_link") ? checked("writeback_archiv_link") : cfg.writeback_archiv_link,
+    // Das Rechnungs-Modul aktiviert die Archiv-Anzeige zwingend mit (sonst läge der
+    // Beleg nur im PraxisArchiv, unsichtbar im Z1-Karteireiter „Archiv").
+    writeback_archiv_link:
+      hasEl("pvs_file_invoices") && checked("pvs_file_invoices")
+        ? true
+        : hasEl("writeback_archiv_link")
+          ? checked("writeback_archiv_link")
+          : cfg.writeback_archiv_link,
     z1_control_enabled: hasEl("z1_control_enabled") ? checked("z1_control_enabled") : cfg.z1_control_enabled,
     z1_control_hour: hasEl("z1_control_hour") ? clampInt(val("z1_control_hour"), 3, 0, 23) : cfg.z1_control_hour,
     z1_control_months: hasEl("z1_control_months") ? clampInt(val("z1_control_months"), 36, 1, 120) : cfg.z1_control_months,
@@ -410,19 +425,27 @@ function renderDashboard() {
         <div class="result" id="z1_bootstrap_result"></div>
       </details>
 
-      <h3 style="margin-top:20px">Rückschreiben nach Z1 (digitale Aufnahme)</h3>
-      <p class="sub" style="margin-bottom:10px">Braucht einen schreibfähigen Login. Jede Funktion einzeln aktivierbar.</p>
+      <h3>Daten aus der Online-Aufnahme übernehmen</h3>
+      <p class="sub" style="margin-bottom:10px">Was Patienten vor dem Termin online ausfüllen, in die Patientenakte übernehmen. Braucht einen schreibfähigen Login; jede Funktion ist einzeln aktivierbar.</p>
       <div class="row">
-        <div class="field"><label>Schreib-Benutzer</label><input id="z1_db_write_user" placeholder="z1" /></div>
+        <div class="field"><label>Schreib-Benutzer</label><input id="z1_db_write_user" placeholder="Schreib-Login" /></div>
         <div class="field"><label>Schreib-Passwort</label><input id="z1_db_write_password" type="password" /></div>
       </div>
-      <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_contact" /> Kontaktdaten (Telefon/E-Mail) zurückschreiben</label>
-      <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_address" /> Adresse überschreiben (Straße/PLZ/Ort)</label>
-      <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_cave" /> CAVE/Allergien in Risikoanamnese</label>
-      <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_co_to_risk" /> Bei „c/o"-Adresszusatz Hinweis in Risikoanamnese</label>
-      <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_anamnese" /> Krankenanamnese (PATINFO)</label>
-      <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_archiv_link" /> Anamnese-PDF im Z1-Karteireiter „Archiv" verlinken (wie Nelly)</label>
-      <label class="check" style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="writeback_new_patient" /> Neupatient anlegen <span class="hint">(Vorsicht: Dubletten-Risiko beim Kartenstecken)</span></label>
+      <label class="check"><input type="checkbox" id="writeback_contact" /> Kontaktdaten (Telefon, E-Mail)</label>
+      <label class="check"><input type="checkbox" id="writeback_address" /> Anschrift <span class="hint">(überschreibt die vorhandene Adresse)</span></label>
+      <label class="check"><input type="checkbox" id="writeback_cave" /> Allergien &amp; Warnhinweise <span class="hint">(als Risikoanamnese)</span></label>
+      <label class="check"><input type="checkbox" id="writeback_anamnese" /> Krankengeschichte / Anamnese</label>
+      <label class="check"><input type="checkbox" id="writeback_archiv_link" /> Abgelegte Dokumente im Karteireiter „Archiv" anzeigen</label>
+
+      <h3>Rechnungen im PVS ablegen</h3>
+      <p class="sub" style="margin-bottom:10px">Rechnungen und Stornos aus dem Praxishub-Rechnungsmodul ins PVS-Archiv legen und den Zahlungsstatus in der Karteikarte vermerken. Braucht den schreibfähigen Login. Aktiviert die Anzeige im Karteireiter „Archiv" und die Statusnotiz automatisch mit.</p>
+      <label class="check"><input type="checkbox" id="pvs_file_invoices" /> Rechnungen &amp; Stornos im PVS ablegen <span class="hint">(vermerkt „bezahlt/offen" automatisch in der Karteikarte)</span></label>
+
+      <details class="collapsible" style="margin-top:14px">
+        <summary>Erweiterte Rückschreib-Optionen</summary>
+        <label class="check" style="margin-top:10px"><input type="checkbox" id="writeback_co_to_risk" /> Abweichende Anschrift (c/o) als Hinweis vermerken</label>
+        <label class="check"><input type="checkbox" id="writeback_new_patient" /> Neupatient anlegen <span class="hint">(Vorsicht: Dubletten-Risiko beim Kartenstecken)</span></label>
+      </details>
 
       <h3 style="margin-top:20px">Praxis-Steuerung (Umsatz- &amp; Leistungs-Sync)</h3>
       <p class="sub" style="margin-bottom:10px">Liest einmal täglich aggregierte Umsatz-/Abrechnungsdaten (read-only) und speist das Modul „Praxis-Steuerung" in Praxishub. Nur Aggregate, keine Klartext-Patientendaten. War der PC nachts aus, wird der Lauf morgens nachgeholt.</p>
@@ -445,6 +468,8 @@ function renderDashboard() {
   `;
 
   applyConfig(cfg);
+  syncInvoiceModule();
+  $("#pvs_file_invoices")?.addEventListener("change", syncInvoiceModule);
   $("#save").addEventListener("click", saveFromDashboard);
   $("#test_cloud").addEventListener("click", () => testConn("test_cloud_connection", "Cloud"));
   $("#test_kim").addEventListener("click", () => testConn("test_kim_connection", "KIM"));
@@ -453,6 +478,29 @@ function renderDashboard() {
   $("#test_z1db").addEventListener("click", onTestZ1);
   $("#bootstrap_ro").addEventListener("click", onBootstrapRo);
   $("#save2").addEventListener("click", saveFromDashboard);
+}
+
+/** Modul „Rechnungen im PVS ablegen" zieht die Archiv-Anzeige zwingend mit:
+ *  ist es an, wird „Dokumente im Archiv anzeigen" angehakt und gesperrt. */
+function syncInvoiceModule() {
+  const inv = $("#pvs_file_invoices") as HTMLInputElement | null;
+  const arch = $("#writeback_archiv_link") as HTMLInputElement | null;
+  if (!inv || !arch) return;
+  if (inv.checked) {
+    // Vorherige Nutzer-Wahl merken, dann erzwingen + sperren.
+    if (arch.dataset.prev === undefined) arch.dataset.prev = arch.checked ? "1" : "0";
+    arch.checked = true;
+    arch.disabled = true;
+    arch.title = "Durch „Rechnungen im PVS ablegen" automatisch aktiviert";
+  } else {
+    // Modul aus → gemerkten Zustand wiederherstellen (nicht fälschlich angehakt lassen).
+    if (arch.dataset.prev !== undefined) {
+      arch.checked = arch.dataset.prev === "1";
+      delete arch.dataset.prev;
+    }
+    arch.disabled = false;
+    arch.title = "";
+  }
 }
 
 function statusCard(id: string, title: string, desc: string) {
@@ -505,6 +553,7 @@ function applyConfig(c: ConnectorConfig) {
   setChecked("writeback_new_patient", c.writeback_new_patient);
   setChecked("writeback_co_to_risk", c.writeback_co_to_risk);
   setChecked("writeback_archiv_link", c.writeback_archiv_link ?? false);
+  setChecked("pvs_file_invoices", c.pvs_file_invoices ?? false);
   setChecked("z1_control_enabled", c.z1_control_enabled ?? false);
   setIf("z1_control_hour", String(c.z1_control_hour ?? 3));
   setIf("z1_control_months", String(c.z1_control_months ?? 36));

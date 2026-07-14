@@ -83,6 +83,12 @@ textarea:focus { outline: none; border-color: var(--accent); }
 .divider-or::before, .divider-or::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .collapsible { margin-top: 6px; }
 .collapsible summary { cursor: pointer; color: var(--accent); font-size: 13px; }
+
+/* Feature-Untergruppen im Dashboard */
+h3 { font-size: 13px; font-weight: 600; margin: 22px 0 4px; }
+.check { display: flex; align-items: center; gap: 9px; margin: 9px 0; font-size: 13px; cursor: pointer; }
+.check input { flex: 0 0 auto; width: 15px; height: 15px; accent-color: var(--accent); }
+.check .hint { margin: 0; }
 .result { font-size: 13px; margin-top: 8px; min-height: 18px; }
 .result.ok { color: var(--ok); }
 .result.err { color: var(--err); }

@@ -7,6 +7,9 @@
 //!   * Adresse (`writeback_address`)  → `UPDATE ADR` STR/PLZ/ORT (überschreibend)
 //!   * CAVE    (`writeback_cave`)     → additiv an `PAT.ANAMNESE` (Risikoanamnese)
 //!   * Anamnese(`writeback_anamnese`) → `INSERT INTO PATINFO` (ART=1, wie Nelly)
+//!   * Notizen (`writeback_notes`)    → `INSERT INTO BEH` (Karteikarte-Freitext,
+//!     GOART leer, `BEHTEXTART='k'`) — Verwaltungs-/Rechnungsnotizen, NICHT
+//!     abrechnungsrelevant, getrennt von der Krankenanamnese.
 
 use crate::cloud::{CloudClient, PendingWriteback};
 use crate::config::ConnectorConfig;
@@ -25,6 +28,13 @@ const ANAMNESE_MAX: usize = 80;
 const PATINFO_INFO_MAX: usize = 80;
 /// ART des „Anamnese"-Tabs in der Z1-Patienten-Information.
 const ART_ANAMNESE: &str = "1";
+/// `BEH.BEHTEXT` (Karteikarten-Freitext) ist `varchar(60)`.
+const BEHTEXT_MAX: usize = 60;
+/// `BEHTEXTART='k'` = manuelle Karteikarten-Textzeile (Verlaufsdoku). Live am Z1
+/// verifiziert: echte Rechnungs-Notizen liegen genau so vor („… / Re.-Nr. … EUR").
+const BEHTEXTART_NOTE: &str = "k";
+/// Z1 vergibt die Sitzungs-Zeilennummer (`BEH.LFDSESSIONENTRY`) in 50er-Schritten.
+const BEH_ENTRY_STEP: i32 = 50;
 /// Default-Behandler (`LEBID`) für maschinell erzeugte Anamnese-Zeilen.
 /// TODO: praxisseitig konfigurierbar machen (analog Nelly nutzt Z1 hier den
 /// erfassenden Behandler).
@@ -54,6 +64,9 @@ pub struct PatientWriteback {
     pub cave: Vec<String>,
     /// Krankenanamnese-Zeilen — je Zeile ein `PATINFO`-Eintrag (ART=1).
     pub anamnese: Vec<String>,
+    /// Karteikarten-/Verlaufsnotizen (z. B. Rechnungsstatus) — je Zeile eine
+    /// `BEH`-Freitextzeile (GOART leer). Getrennt von `anamnese`.
+    pub notes: Vec<String>,
 }
 
 /// Was tatsächlich geschrieben wurde (für Logging/Ack an die Cloud).
@@ -64,6 +77,7 @@ pub struct WritebackReport {
     pub cave_appended: usize,
     pub co_appended: usize,
     pub anamnese_inserted: usize,
+    pub notes_inserted: usize,
     /// Nicht ausgeführte Teile (Toggle aus, Feld zu lang, Adresse geteilt …).
     pub skipped: Vec<String>,
 }
@@ -142,10 +156,26 @@ pub async fn apply_writeback(
         }
     }
 
+    // Karteikarten-/Verlaufsnotizen (z. B. Rechnungsstatus) → BEH-Freitext.
+    // Eigener Toggle, damit sie NICHT am Anamnese-Rückschrieb hängen.
+    if !data.notes.is_empty() {
+        if cfg.writeback_notes_enabled() {
+            match write_notes(conn, &patnr, &data.notes).await {
+                Ok(n) => report.notes_inserted = n,
+                Err(e) => {
+                    warn!(%patnr, error=%e, "Notiz-Rückschreiben fehlgeschlagen");
+                    report.skipped.push(format!("Notizen: {e}"));
+                }
+            }
+        } else {
+            report.skipped.push("Notizen: Toggle aus".into());
+        }
+    }
+
     info!(
         %patnr, contact=report.contact_updated, address=report.address_updated,
         cave=report.cave_appended, co=report.co_appended, anamnese=report.anamnese_inserted,
-        "Z1-Rückschreiben abgeschlossen"
+        notes=report.notes_inserted, "Z1-Rückschreiben abgeschlossen"
     );
     Ok(report)
 }
@@ -371,7 +401,23 @@ fn co_note(addendum: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::co_note;
+    use super::{clamp_behtext, co_note, BEHTEXT_MAX};
+
+    #[test]
+    fn clamp_behtext_respektiert_60_und_umlaut_grenze() {
+        // Kurze Notiz bleibt unverändert (nur getrimmt).
+        assert_eq!(
+            clamp_behtext("  Rechnung AH-2026-0012 über 85,00 € bezahlt  "),
+            "Rechnung AH-2026-0012 über 85,00 € bezahlt"
+        );
+        // Genau an der Byte-Grenze mit Mehrbyte-Zeichen davor darf nicht mitten in
+        // einem Codepoint schneiden — Ergebnis bleibt gültiges UTF-8 ≤ 60 Bytes.
+        let long = format!("{}üüü", "x".repeat(58)); // 58 + 6 Bytes = 64 Bytes
+        let out = clamp_behtext(&long);
+        assert!(out.len() <= BEHTEXT_MAX);
+        assert!(out.is_char_boundary(out.len()));
+        assert!(std::str::from_utf8(out.as_bytes()).is_ok());
+    }
 
     #[test]
     fn befuellter_adresszusatz_setzt_festen_hinweis() {
@@ -443,11 +489,10 @@ async fn insert_anamnese_rows(
     for line in lines {
         let lfd = pad_left(&next.to_string(), 4);
         let rinfo = fresh_rinfo(None);
-        let mut info = line.clone();
-        if info.len() > PATINFO_INFO_MAX {
-            info.truncate(PATINFO_INFO_MAX);
-        }
-        // Feste Felder wie Nelly: LEBID=Behandler, ART=1, PID='  0', Rest leer.
+        // Byte-sicher kappen (varchar(80)); rohes truncate würde an einer
+        // Umlaut-/€-Grenze panicken.
+        let info = clamp_utf8(line, PATINFO_INFO_MAX);
+        // Feste Felder: LEBID=Behandler, ART=1, PID='  0', Rest leer.
         conn.exec_expect(
             "INSERT INTO PATINFO \
              (RINFO,PATNR,DATUM,LFDPATINFOART,LEBID,ART,INFORMATION,MDID,STATUS,PID,\
@@ -468,6 +513,124 @@ async fn insert_anamnese_rows(
         .await?;
         inserted += 1;
         next += 1;
+    }
+    Ok(inserted)
+}
+
+/// Schreibt Karteikarten-/Verlaufsnotizen (z. B. Rechnungsstatus) als
+/// `BEH`-Freitextzeilen: `GOART` **leer** (kein Honorar → NICHT abrechnungs-
+/// relevant, wird von den Abrechnungsläufen/DZR nicht erfasst), `BEHTEXTART='k'`
+/// (manuelle Textzeile). **Live am Z1 verifiziert** (Patient 16006): echte
+/// Rechnungs-Notizen liegen exakt so vor (`… / Re.-Nr. 2/16006/1 / 66,08 EUR`),
+/// und ein INSERT dieses Musters wurde bestätigt (`@@ROWCOUNT=1`, zurücklesbar,
+/// per PK löschbar).
+///
+/// **Append-only (GoBD):** jede Notiz ist eine neue Zeile; ein Statuswechsel
+/// (bezahlt→Inkasso) kommt als **Folgezeile**, NIE als Update/Delete.
+/// Läuft in einer Transaktion; alle Zeilen oder keine.
+async fn write_notes(conn: &mut Z1Connection, patnr: &str, lines: &[String]) -> Result<usize> {
+    let clean: Vec<String> = lines
+        .iter()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if clean.is_empty() {
+        return Ok(0);
+    }
+
+    let datum = Local::now().format("%Y%m%d").to_string();
+    let patnr10 = pad_left(patnr, 10);
+
+    // Nächste freie Sitzungs-Zeilennummer für (PATNR, heute, BEHSESSION=' ').
+    // Z1 zählt in 50er-Schritten; bei Textzeilen ist BEHSESSION leer (verifiziert:
+    // 138807/139029 der 'k'-Zeilen). Teil des PK (PATNR,DATUM,BEHSESSION,LFDSESSIONENTRY).
+    let max = conn
+        .scalar_i32(
+            "SELECT ISNULL(MAX(CAST(LTRIM(RTRIM(LFDSESSIONENTRY)) AS INT)), 0) FROM BEH \
+             WHERE LTRIM(RTRIM(PATNR)) = @P1 AND DATUM = @P2 AND BEHSESSION = ' '",
+            &[&patnr, &datum],
+        )
+        .await?;
+    let start = max + BEH_ENTRY_STEP;
+
+    conn.simple("BEGIN TRANSACTION").await?;
+    match insert_note_rows(conn, &clean, &datum, &patnr10, start).await {
+        Ok(n) => {
+            conn.simple("COMMIT").await?;
+            Ok(n)
+        }
+        Err(e) => {
+            let _ = conn.simple("ROLLBACK").await;
+            Err(e)
+        }
+    }
+}
+
+/// Kappt `s` auf höchstens `max` **Bytes** an einer UTF-8-Codepoint-Grenze, ohne
+/// einen Mehrbyte-Codepoint zu zerschneiden — `String::truncate` würde dort
+/// panicken. Z1-`varchar`-Felder zählen Bytes (Windows-1252); Umlaute/€ sind
+/// mehrbytig, sodass die Byte-Grenze mitten in einem Zeichen liegen kann.
+fn clamp_utf8(s: &str, max: usize) -> String {
+    let mut t = s.to_string();
+    if t.len() > max {
+        let mut cut = max;
+        while !t.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        t.truncate(cut);
+    }
+    t
+}
+
+/// Notiztext für `BEH.BEHTEXT` (`varchar(60)`): getrimmt und byte-sicher gekappt.
+fn clamp_behtext(s: &str) -> String {
+    clamp_utf8(s.trim(), BEHTEXT_MAX)
+}
+
+/// Fügt die Notiz-Zeilen in `BEH` ein (innerhalb der offenen Transaktion des
+/// Aufrufers). Feste Felder wie eine manuelle Karteikarten-Zeile (live verifiziert):
+/// `BEHSESSION=' '`, `ANZAHL='   100'`, `PRIVAT='0'`, `GOART`/`DMBETRAG`/`PID` leer,
+/// `BEHSONST1` = `'0'` + 13 Leerzeichen + `DATUM` (verifizierte Kurzform, len 22).
+async fn insert_note_rows(
+    conn: &mut Z1Connection,
+    lines: &[String],
+    datum: &str,
+    patnr10: &str,
+    start_entry: i32,
+) -> Result<usize> {
+    let patnr10 = patnr10.to_string();
+    let datum = datum.to_string();
+    // '0' + 13 Leerzeichen + DATUM(8) = 22 Zeichen (häufigste reale Form).
+    let behsonst1 = format!("0{}{}", " ".repeat(13), datum);
+    let mut entry = start_entry;
+    let mut inserted = 0usize;
+    for line in lines {
+        let lfd = pad_left(&entry.to_string(), 4);
+        let rinfo = fresh_rinfo(None);
+        let text = clamp_behtext(line);
+        // CINFO (Erstell-Stempel) = derselbe frische RINFO-Wert für eine neue Zeile.
+        let cinfo = rinfo.clone();
+        conn.exec_expect(
+            "INSERT INTO BEH \
+             (RINFO,CINFO,PATNR,LEBID,PID,DATUM,BEHSESSION,LFDSESSIONENTRY,ANZAHL,\
+              GOART,DMBETRAG,BEHTEXTART,BEHTEXT,PRIVAT,BEHSONST1) \
+             VALUES (@P1,@P2,@P3,@P4,'',@P5,' ',@P6,'   100','','',@P7,@P8,'0',@P9)",
+            &[
+                &rinfo,
+                &cinfo,
+                &patnr10,
+                &DEFAULT_LEBID,
+                &datum,
+                &lfd,
+                &BEHTEXTART_NOTE,
+                &text,
+                &behsonst1,
+            ],
+            1,
+        )
+        .await?;
+        inserted += 1;
+        entry += BEH_ENTRY_STEP;
     }
     Ok(inserted)
 }
@@ -522,6 +685,7 @@ impl From<&PendingWriteback> for PatientWriteback {
             contact: has_contact.then_some(contact),
             cave: w.cave.clone(),
             anamnese: w.anamnese.clone(),
+            notes: w.notes.clone(),
         }
     }
 }

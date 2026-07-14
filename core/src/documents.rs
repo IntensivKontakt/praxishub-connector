@@ -158,6 +158,29 @@ async fn file_one(
     doc: &PendingDocument,
     patid_override: Option<&str>,
 ) -> Result<FilingOutcome> {
+    // Dokumenttyp zuerst auflösen — ein unbekannter Belegtyp scheitert hier hart
+    // (der Aufrufer meldet /failed mit klarem Grund), statt stillschweigend als
+    // Anamnese im falschen Karteireiter zu landen. So früh, dass für einen nicht
+    // ablegbaren Beleg gar kein PDF gestaged wird.
+    let kind = DocumentKind::from_tag(&doc.kind).ok_or_else(|| {
+        crate::error::ConnectorError::Vdds(format!(
+            "unbekannter Dokumenttyp \"{}\" (Connector {}) — die Cloud liefert einen \
+             Belegtyp, den dieser Connector nicht ablegen kann; Connector aktualisieren",
+            doc.kind.trim(),
+            env!("CARGO_PKG_VERSION"),
+        ))
+    })?;
+
+    // Rechnungs-/Storno-Ablage nur, wenn das Modul aktiv ist (der Heartbeat meldet
+    // die Typen ohnehin nur dann — dies ist die defensive Absicherung, falls die
+    // Cloud den Beleg trotzdem ausliefert).
+    if matches!(kind, DocumentKind::Rechnung | DocumentKind::Storno) && !cfg.pvs_file_invoices {
+        return Err(crate::error::ConnectorError::Vdds(
+            "Rechnungs-/Storno-Ablage ist in diesem Connector nicht aktiviert \
+             (Modul „Rechnungen im PVS ablegen\" aus)".into(),
+        ));
+    }
+
     let pdf_bytes = STANDARD
         .decode(doc.pdf_base64.as_bytes())
         .map_err(|e| crate::error::ConnectorError::Vdds(format!("PDF Base64 ungültig: {e}")))?;
@@ -272,7 +295,7 @@ async fn file_one(
     let req = ImportRequest {
         patient: &patient,
         pdf_path: &pdf_path,
-        kind: DocumentKind::from_tag(&doc.kind),
+        kind,
     };
 
     // Die Dokumentkopie bewusst NICHT sofort löschen: ConVis holt sie erst per
@@ -313,13 +336,14 @@ async fn link_in_z1_archiv(
     doc_mmoid: &str,
     kind: DocumentKind,
 ) -> Result<()> {
-    if !cfg.writeback_archiv_link || !cfg.z1db_write_login_configured() {
+    if !cfg.archiv_link_enabled() || !cfg.z1db_write_login_configured() {
         return Ok(());
     }
-    // Nur Anamnesen: HKPs entstehen in Z1 selbst und sind dort schon sichtbar.
-    if !matches!(kind, DocumentKind::Anamnese) {
+    // Wie erscheint der Beleg im Z1-Archiv-Index? `None` (z. B. HKP — entsteht in
+    // Z1 selbst und ist dort schon sichtbar) ⇒ nichts zu verlinken.
+    let Some((beschreibung, externobjektart)) = kind.archiv_index() else {
         return Ok(());
-    }
+    };
     let patid = patid.trim().to_string();
     if patid.is_empty() {
         return Ok(());
@@ -365,9 +389,10 @@ async fn link_in_z1_archiv(
         return Ok(());
     };
     let inserted =
-        crate::z1db::archiv::link_pa_document(cfg, &patid, &pa_mmoid, "Anamnesebogen", 13).await?;
+        crate::z1db::archiv::link_pa_document(cfg, &patid, &pa_mmoid, beschreibung, externobjektart)
+            .await?;
     if inserted {
-        info!(patid = %patid, mmoid = %pa_mmoid, "Z1-ARCHIV-Zeile geschrieben — Anamnese im Archiv-Reiter sichtbar");
+        info!(patid = %patid, mmoid = %pa_mmoid, typ = beschreibung, "Z1-ARCHIV-Zeile geschrieben — Dokument im Archiv-Reiter sichtbar");
     } else {
         debug!(patid = %patid, mmoid = %pa_mmoid, "Z1-ARCHIV-Zeile existiert bereits");
     }

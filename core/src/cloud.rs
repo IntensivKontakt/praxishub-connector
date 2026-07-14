@@ -29,6 +29,8 @@ struct WritebackAppliedBody<'a> {
     co_appended: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     anamnese_inserted: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notes_inserted: Option<usize>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     skipped: Vec<String>,
 }
@@ -125,9 +127,23 @@ pub struct PendingWriteback {
     /// CAVE-/Allergie-Einträge (additiv an die Risikoanamnese).
     #[serde(default)]
     pub cave: Vec<String>,
-    /// Krankenanamnese-Zeilen (→ PATINFO).
+    /// Krankenanamnese-Zeilen (→ PATINFO ART=1). **Nur klinische Anamnese** —
+    /// KEINE Rechnungsstatus/Verwaltungsnotizen (dafür `notes`).
     #[serde(default)]
     pub anamnese: Vec<String>,
+    /// Karteikarten-/Verlaufsnotizen (z. B. „Rechnung AH-2026-0012 über 85,00 €
+    /// bezahlt") → `BEH`-Freitext (GOART leer). Eigener Kanal, getrennt von
+    /// `anamnese`, damit Verwaltungsnotizen nicht in der Krankenanamnese landen.
+    ///
+    /// **Backend-Vertrag (Walletpass-Repo, `connector_writeback.py` /
+    /// `crm_invoice_connector.py`):** Rechnungsstatus-Notizen ab jetzt in `notes[]`
+    /// statt `anamnese[]` liefern. `notes` ist additiv und `#[serde(default)]` —
+    /// eine alte Cloud, die weiter `anamnese[]` schickt, bricht NICHT (der
+    /// Connector legt das dann weiterhin in PATINFO ab, altes Verhalten). Der
+    /// Connector schreibt `notes[]` nur, wenn der Toggle `writeback_notes` aktiv
+    /// ist, und quittiert die Zahl im `applied`-Ack als `notes_inserted`.
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 /// Ein **HKP-Fall** (`PATNR`+`LFDBEFUND`) fürs Praxishub-Tracking-Modul: eine
@@ -335,6 +351,20 @@ struct Heartbeat<'a> {
     vdds_registered: bool,
     kim_watching: bool,
     hkp_db_watching: bool,
+    /// Capability: welche Dokumenttypen dieser Connector in die PVS-Akte ablegen
+    /// darf. Quelle: [`crate::config::ConnectorConfig::supported_document_kinds`]
+    /// — `anamnese`/`hkp` immer, `rechnung`/`storno` nur mit aktivem Modul
+    /// „Rechnungen im PVS ablegen".
+    ///
+    /// **Cloud-Vertrag (im Walletpass-Repo umzusetzen, NICHT hier):**
+    /// `GET /api/v1/connector/documents/pending` muss die Rückgabe auf die
+    /// zuletzt gemeldeten `supported_document_kinds` des jeweiligen Connectors
+    /// filtern — ein Beleg, dessen `kind` der installierte Connector nicht kann,
+    /// wird gar nicht erst ausgeliefert (bleibt `pending`/geht in einen sichtbaren
+    /// „Connector-Update nötig"-Zustand), statt über 5× `/failed`-Backoff still
+    /// auf `failed` zu laufen. Bis der Filter steht, ist das Feld additiv und
+    /// rückwärtskompatibel: eine alte Cloud ignoriert es einfach.
+    supported_document_kinds: &'a [&'a str],
     #[serde(skip_serializing_if = "Option::is_none")]
     last_error: Option<&'a str>,
 }
@@ -410,6 +440,7 @@ impl CloudClient {
         vdds_registered: bool,
         kim_watching: bool,
         hkp_db_watching: bool,
+        supported_document_kinds: &[&str],
         last_error: Option<&str>,
     ) -> Result<()> {
         let body = Heartbeat {
@@ -417,6 +448,7 @@ impl CloudClient {
             vdds_registered,
             kim_watching,
             hkp_db_watching,
+            supported_document_kinds,
             last_error,
         };
         self.auth(self.http.post(self.url("heartbeat")))
@@ -542,6 +574,7 @@ impl CloudClient {
             cave_appended: report.map(|r| r.cave_appended),
             co_appended: report.map(|r| r.co_appended),
             anamnese_inserted: report.map(|r| r.anamnese_inserted),
+            notes_inserted: report.map(|r| r.notes_inserted),
             skipped: report.map(|r| r.skipped.clone()).unwrap_or_default(),
         };
         self.auth(

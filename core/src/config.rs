@@ -142,6 +142,13 @@ pub struct ConnectorConfig {
     /// Krankenanamnese als Zeilen in `PATINFO` (ART=1) schreiben — wie Nelly.
     #[serde(default)]
     pub writeback_anamnese: bool,
+    /// Karteikarten-Notizen (z. B. Rechnungsstatus „… bezahlt") als `BEH`-Freitext-
+    /// zeilen schreiben (GOART leer, `BEHTEXTART='k'` = Verlaufsdoku, NICHT
+    /// abrechnungsrelevant). Eigener Kanal, getrennt von `writeback_anamnese` —
+    /// damit Rechnungsstatus NICHT in der Krankenanamnese landet. Braucht den
+    /// schreibfähigen Login. Siehe `z1db::writeback::write_notes`.
+    #[serde(default)]
+    pub writeback_notes: bool,
     /// Neupatienten anlegen (Vorab-Aufnahme). **Vorsicht:** Dubletten-Risiko beim
     /// Kartenstecken — nur nach empirischem Karten-Match-Test aktivieren.
     #[serde(default)]
@@ -150,11 +157,18 @@ pub struct ConnectorConfig {
     /// (wortwörtlich, als Flag) in die Risikoanamnese (`PAT.ANAMNESE`) schreiben.
     #[serde(default)]
     pub writeback_co_to_risk: bool,
-    /// Nach dem VDDS-Import die Z1-`ARCHIV`-Indexzeile schreiben (Nelly-Parität) —
-    /// macht die Anamnese im Z1-Karteireiter „Archiv" sichtbar. Braucht den
+    /// Nach dem VDDS-Import die Z1-`ARCHIV`-Indexzeile schreiben — macht das
+    /// abgelegte Dokument im Z1-Karteireiter „Archiv" sichtbar. Braucht den
     /// schreibfähigen Login. Siehe `z1db::archiv`.
     #[serde(default)]
     pub writeback_archiv_link: bool,
+    /// Modul „Rechnungen im PVS ablegen": Rechnungs-/Storno-Belege aus dem
+    /// Praxishub-Rechnungsmodul ins PVS-Archiv legen **und** den Zahlungsstatus als
+    /// Karteikarten-Notiz vermerken. Steuert, welche Dokumenttypen der Connector im
+    /// Heartbeat als unterstützt meldet (`supported_document_kinds`); ist er aus,
+    /// liefert die Cloud gar keine Belege. Aktiviert automatisch `writeback_notes`.
+    #[serde(default)]
+    pub pvs_file_invoices: bool,
 }
 
 fn default_true() -> bool {
@@ -192,9 +206,11 @@ impl Default for ConnectorConfig {
             writeback_address: false,
             writeback_cave: false,
             writeback_anamnese: false,
+            writeback_notes: false,
             writeback_new_patient: false,
             writeback_co_to_risk: false,
             writeback_archiv_link: false,
+            pvs_file_invoices: false,
         }
     }
 }
@@ -280,8 +296,36 @@ impl ConnectorConfig {
             || self.writeback_address
             || self.writeback_cave
             || self.writeback_anamnese
+            || self.writeback_notes
+            || self.pvs_file_invoices
             || self.writeback_new_patient
             || self.writeback_co_to_risk
+    }
+
+    /// Notizen-Rückschreiben aktiv? Das Modul „Rechnungen im PVS ablegen"
+    /// (`pvs_file_invoices`) aktiviert den Notiz-Kanal automatisch mit.
+    pub fn writeback_notes_enabled(&self) -> bool {
+        self.writeback_notes || self.pvs_file_invoices
+    }
+
+    /// Archiv-Indexierung aktiv? Das Modul „Rechnungen im PVS ablegen" aktiviert
+    /// die Archiv-Anzeige automatisch mit — sonst läge der Rechnungsbeleg nur im
+    /// PraxisArchiv, aber nicht sichtbar im Z1-Karteireiter „Archiv".
+    pub fn archiv_link_enabled(&self) -> bool {
+        self.writeback_archiv_link || self.pvs_file_invoices
+    }
+
+    /// Dokumenttypen, die der Connector der Cloud als ablegbar meldet
+    /// (`supported_document_kinds` im Heartbeat). Anamnese/HKP immer; Rechnung/
+    /// Storno nur mit aktivem Modul „Rechnungen im PVS ablegen" — sonst liefert
+    /// die Cloud gar keine Belege dieses Typs aus.
+    pub fn supported_document_kinds(&self) -> Vec<&'static str> {
+        let mut kinds = vec!["anamnese", "hkp"];
+        if self.pvs_file_invoices {
+            kinds.push("rechnung");
+            kinds.push("storno");
+        }
+        kinds
     }
 
     /// Schreibfähiger Z1-Login konfiguriert (unabhängig von den Toggles)?
