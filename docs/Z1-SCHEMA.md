@@ -83,8 +83,8 @@ erschlossen · ? unklar/ungeprüft.
 | `ZPLAN` ✓ | 12 487 | Planköpfe (ZE/HKP): `PLANART,KASSENPLAN,ANTRAGSNUMMER,LEBID` | HKP-Tracking (Fall-Status) |
 | `ZEHIT`/`ZEHITLST` ✓ | 2 069/13 316 | ZE-Befund/Planungszeilen (Regelversorgung, Festzuschüsse) | HKP-Leistungen/-Beträge |
 | `EBZ` ✓ | 4 198 | Elektronischer Antrag: `DOKART`(1=Antrag,3=Antwort,4=Rückfrage),`ZUGESTELLT` | **HKP-Status live** (genehmigt/abgelehnt) |
-| `PARHIT`/`PARHITLST`/`PARPOOL` ~ | 1 045/7 777/17 464 | PAR-Therapie-Pläne (+ Poolzeilen) | PAR-Tracking (mit PABEFUND/PARSTATUS) |
-| `KBRHIT`/`KBRHITLST` ~ | 1 964/15 355 | Kieferbruch/KBR-Pläne | KBR-Tracking |
+| `PARHIT`/`PARHITLST` ✓ | 1 045/7 777 | PAR-Fall/-Antrag (`PASTATUS`=kodierter Charting-String, `GUTACHTERDATUM,THERAPIEERG,ANTRAGSNUMMER`) + Leistungszeilen | PAR-Tracking (mit PABEFUND/PARSTATUS) |
+| `KBRHIT`/`KBRHITLST` ✓ | 1 964/15 355 | Kieferbruch/KGL-Fall (`VORHZAEHNE,PLANUNGSDATUM,ANTRAGSNUMMER`) + Leistungszeilen | KBR-Tracking |
 | `QAHIT` ✓ | 1 126 | **KCH-Quartalsabrechnung** (BEMA konservierend-chirurgisch, KZBV-DTA): Fälle je Quartal, `PKTSUMKC/IP,ZAHONORAR,SUMTOTAL,DTA1-4` | **GKV-Umsatz KCH** (Abrechnungswahrheit) |
 | `KFOHIT` 0, `HMPREIS` 0 | | KFO-Pläne (leer — kein KFO) | — |
 
@@ -132,9 +132,8 @@ erschlossen · ? unklar/ungeprüft.
 |---|--:|---|---|
 | `KOMLEMAIL` ✓ | 6 784 | **KIM-Mail-Store** je Patient (`MAILFROM/TO,SUBJECT,MESSAGEID,DIENSTKENNUNG`). `SUBJECT=EEBZ0_…ZE…` → enthält **EBZ-HKP-Nachrichten** | KIM/EBZ-Alternativquelle (HKP-Einreichung/-Antwort) |
 | `GEMATIKEVENT` ✓ | 210 312 | **TI-Konnektor-Events** (`TOPIC=CARD/REMOVED…`, `PARAMETER=CardHandle/EGK`) | Karten-Steck-Events, TI-Health |
-| `GEMATIKERROR`/`GEMATIKTRACE` ~ | 114 797/88 574 | TI-Fehler/-Traces | TI-Health-Monitoring |
-| `PROTOKOLL` ~ | 108 773 | System-/Audit-Log | Audit |
-| `Z1POST` ~ | 1 590 | Internes Postfach | — |
+| `GEMATIKERROR`/`GEMATIKTRACE` ✓ | 114 797/88 574 | TI-Fehler/-Traces (Konnektor) | TI-Health-Monitoring |
+| `Z1POST` ✓ | 1 590 | **PLZ-/Orts-/Straßen-Verzeichnis** (Adress-Autocomplete) — kein Postfach! → gehört zu Referenzkatalogen |
 
 ## J. Praxis, Personal & Systemkonfiguration
 
@@ -145,8 +144,15 @@ erschlossen · ? unklar/ungeprüft.
 | `NUMBERPOOL` ✓ | 1 | **Atomare ID-Vergabe** (PATNR/ADRID/LFD…) — kritisch für Neuanlagen |
 | `MANDANT` 2, `PRAXIS` 1, `Z1SYSTEM` 1 | | Mandant/Praxis/System-Konfiguration |
 | `SCHNITTSTELLEN` ✓ | 0 | Konfigurierte GDT/BDT-Schnittstellen — **leer** (kein Import-Fallback) |
-| `GERAETE`/`WORKSTATION`/`PRINTER`/`ROOM` | 89/78/876/26 | Geräte/Arbeitsplätze/Drucker/Räume |
-| `RECHTE`/`PWGROUPS`, `PROGPOOL`/`MODULEPOOL`/`SELECTPOOL` | | Rechte, Programm-/Modul-Konfiguration |
+| `GERAETE` ✓ | 89 | **Medizinproduktebuch (MPG)**: Hersteller/Serien-Nr./Garantie/Kontroll-/Störungsdaten; u.a. eHealth-Kartenleser |
+| `WORKSTATION` ✓ | 78 | Arbeitsplätze: Kartenleser-Port, Standard-Filter, **`ACTPATNR`**=aktuell geöffneter Patient (= „Variante-A"-Trigger) |
+| `PRINTER`/`ROOM` | 876/26 | Drucker (je Arbeitsplatz) / Behandlungsräume |
+| `PROGPOOL` ✓ | 222 | **Interne Programm-/Modul-Registry** (jedes Z1-Teilprogramm mit Lizenz, Aufrufzähler, Sperre) |
+| `MODULEPOOL` ✓ | 115 | **Käuflicher Lizenz-Baukasten** (Modulname, Lizenz, Preis/Monatspreis) |
+| `PARPOOL` ✓ | 17 464 | **Key-Value-Parameter-Store** je Programm (`PROGID,KUERZEL,PARVALUE`) — Systemkonfiguration |
+| `SELECTPOOL` ✓ | 1 970 | Konfigurierbare Auswahllisten/Dropdowns |
+| `PROTOKOLL` ✓ | 108 779 | **Änderungsprotokoll (Audit/GoBD)** je Patient (`ART,INFO`, z.B. „Lstg. gelöscht") |
+| `RECHTE`/`PWGROUPS` | 6/76 | Rollen (Programm-IDs × Permission-Bitmaske) |
 
 ## K. Labor, Material, Sterilisation & QM
 
