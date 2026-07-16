@@ -34,6 +34,11 @@ jobs:
           node-version: 20
       - uses: dtolnay/rust-toolchain@stable
 
+      # Gate: die Logik-Tests müssen grün sein, BEVOR wir kompilieren/signieren —
+      # sonst würde ein signierter Installer mit gebrochenem Kern ausgeliefert.
+      - name: Core-Tests (Gate vor Build & Signierung)
+        run: cargo test -p praxishub-connector-core
+
       - name: sign-Tool installieren
         shell: pwsh
         run: |

@@ -246,8 +246,9 @@ function collectFromWizard(): ConnectorConfig {
     // PVS ablegen“ automatisch mit aktiviert (Karteikarten-Statusnotizen).
     writeback_notes: hasEl("pvs_file_invoices") ? checked("pvs_file_invoices") : cfg.writeback_notes,
     pvs_file_invoices: hasEl("pvs_file_invoices") ? checked("pvs_file_invoices") : cfg.pvs_file_invoices,
-    // Kein eigenes UI-Feld — bestehenden Wert bewahren (Default 24 „Allgemeines Dokument").
-    upload_document_typenr: cfg.upload_document_typenr ?? 24,
+    upload_document_typenr: hasEl("upload_document_typenr")
+      ? clampInt(val("upload_document_typenr"), 24, 1, 999)
+      : cfg.upload_document_typenr ?? 24,
     writeback_new_patient: hasEl("writeback_new_patient") ? checked("writeback_new_patient") : cfg.writeback_new_patient,
     writeback_co_to_risk: hasEl("writeback_co_to_risk") ? checked("writeback_co_to_risk") : cfg.writeback_co_to_risk,
     // Das Rechnungs-Modul aktiviert die Archiv-Anzeige zwingend mit (sonst läge der
@@ -445,6 +446,10 @@ function renderDashboard() {
       <p class="sub" style="margin-bottom:10px">Rechnungen und Stornos aus dem Praxishub-Rechnungsmodul ins PVS-Archiv legen und den Zahlungsstatus in der Karteikarte vermerken. Braucht den schreibfähigen Login. Aktiviert die Anzeige im Karteireiter „Archiv“ und die Statusnotiz automatisch mit.</p>
       <label class="check"><input type="checkbox" id="pvs_file_invoices" /> Rechnungen &amp; Stornos im PVS ablegen <span class="hint">(vermerkt „bezahlt/offen“ automatisch in der Karteikarte)</span></label>
 
+      <h3>Patienten-Uploads</h3>
+      <p class="sub" style="margin-bottom:10px">Vom Patienten in der Online-Anamnese hochgeladene Dateien (Röntgen, Fotos, Medikationsplan) werden automatisch in der Akte abgelegt.</p>
+      <div class="field" style="max-width:320px"><label>Ziel-Dokumentart im PVS (VDDS-Objekttyp-Nr.)</label><input id="upload_document_typenr" placeholder="24" /><p class="hint">Standard 24 = „Allgemeines Dokument“. Alternativen: 8 Bild/Foto, 7 Foto, 11 Fremdbefund.</p></div>
+
       <details class="collapsible" style="margin-top:14px">
         <summary>Erweiterte Rückschreib-Optionen</summary>
         <label class="check" style="margin-top:10px"><input type="checkbox" id="writeback_co_to_risk" /> Abweichende Anschrift (c/o) als Hinweis vermerken</label>
@@ -558,6 +563,7 @@ function applyConfig(c: ConnectorConfig) {
   setChecked("writeback_co_to_risk", c.writeback_co_to_risk);
   setChecked("writeback_archiv_link", c.writeback_archiv_link ?? false);
   setChecked("pvs_file_invoices", c.pvs_file_invoices ?? false);
+  setIf("upload_document_typenr", String(c.upload_document_typenr ?? 24));
   setChecked("z1_control_enabled", c.z1_control_enabled ?? false);
   setIf("z1_control_hour", String(c.z1_control_hour ?? 3));
   setIf("z1_control_months", String(c.z1_control_months ?? 36));
