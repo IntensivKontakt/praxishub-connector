@@ -42,6 +42,7 @@ interface ConnectorConfig {
   writeback_co_to_risk: boolean;
   writeback_archiv_link: boolean;
   pvs_file_invoices: boolean;
+  upload_document_typenr: number;
   // Praxis-Steuerung: nächtlicher Umsatz-/Leistungs-Aggregat-Sync (opt-in)
   z1_control_enabled: boolean;
   z1_control_hour: number;
@@ -80,6 +81,7 @@ function blankConfig(): ConnectorConfig {
     writeback_co_to_risk: false,
     writeback_archiv_link: false,
     pvs_file_invoices: false,
+    upload_document_typenr: 24,
     z1_control_enabled: false,
     z1_control_hour: 3,
     z1_control_months: 36,
@@ -244,6 +246,8 @@ function collectFromWizard(): ConnectorConfig {
     // PVS ablegen“ automatisch mit aktiviert (Karteikarten-Statusnotizen).
     writeback_notes: hasEl("pvs_file_invoices") ? checked("pvs_file_invoices") : cfg.writeback_notes,
     pvs_file_invoices: hasEl("pvs_file_invoices") ? checked("pvs_file_invoices") : cfg.pvs_file_invoices,
+    // Kein eigenes UI-Feld — bestehenden Wert bewahren (Default 24 „Allgemeines Dokument").
+    upload_document_typenr: cfg.upload_document_typenr ?? 24,
     writeback_new_patient: hasEl("writeback_new_patient") ? checked("writeback_new_patient") : cfg.writeback_new_patient,
     writeback_co_to_risk: hasEl("writeback_co_to_risk") ? checked("writeback_co_to_risk") : cfg.writeback_co_to_risk,
     // Das Rechnungs-Modul aktiviert die Archiv-Anzeige zwingend mit (sonst läge der

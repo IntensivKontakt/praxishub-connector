@@ -215,7 +215,7 @@ fn run_push_test(args: &[String]) -> i32 {
         first_name: vorname,
         birth_date: dob,
     };
-    let req = media::ImportRequest { patient: &patient, pdf_path: &pdf_path, kind };
+    let req = media::ImportRequest::pdf(&patient, &pdf_path, kind);
 
     // Stabile, dateinamen-sichere MMOID aus dem PDF-Namen — unter ihr wird die
     // Kopie gestaged, damit ein MMOEXPORT-Pull von ConVis sie findet.

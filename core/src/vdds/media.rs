@@ -56,6 +56,11 @@ pub enum DocumentKind {
     Rechnung,
     /// Storno-/Gutschriftbeleg zu einer Rechnung.
     Storno,
+    /// Vom Patienten in der digitalen Anamnese hochgeladene Datei (Röntgen, Foto,
+    /// Medikationsplan) — kann PDF, JPEG oder PNG sein (Format via `content_type`).
+    /// Die Ziel-Dokumentart (TYPENR/EXTERNOBJEKTART) ist konfigurierbar
+    /// ([`crate::config::ConnectorConfig::upload_document_typenr`]).
+    AnamneseUpload,
 }
 
 impl DocumentKind {
@@ -75,29 +80,40 @@ impl DocumentKind {
             // Rechnungs-Variante und teilt sich Typ 12 (im ARCHIV über die
             // OBJEKTBESCHREIBUNG „Stornorechnung" unterscheidbar, s. archiv_index).
             DocumentKind::Rechnung | DocumentKind::Storno => ("Rechnung", 12),
+            // Patienten-Upload: neutraler Default („Allgemeines Dokument", Nr. 24).
+            // Der tatsächlich benutzte Typ kommt zur Laufzeit aus der Config
+            // (upload_document_typenr) via ImportRequest.media_type_override — dieser
+            // Default greift nur als Sicherheitsnetz, falls kein Override gesetzt ist.
+            DocumentKind::AnamneseUpload => ("Dokument", 24),
         }
     }
 
     /// Rückfall-Typ, falls das PVS den primären `TYPENR` ablehnt (ältere
     /// ConVis-Typtabellen): Anamnese fällt auf „Formular" (Nr. 10) zurück,
-    /// womit der Import nachweislich funktioniert. Für Rechnung/Storno gibt es
-    /// keinen Rückfall — Typ 12 ist live bestätigt.
+    /// womit der Import nachweislich funktioniert. Für Rechnung/Storno/Upload gibt
+    /// es keinen Rückfall — die Typen sind in PraxisArchiv vorhanden.
     fn media_type_fallback(self) -> Option<(&'static str, u32)> {
         match self {
             DocumentKind::Anamnese => Some(("Formular", 10)),
-            DocumentKind::Hkp | DocumentKind::Rechnung | DocumentKind::Storno => None,
+            DocumentKind::Hkp
+            | DocumentKind::Rechnung
+            | DocumentKind::Storno
+            | DocumentKind::AnamneseUpload => None,
         }
     }
 
     /// Wie das Dokument im Z1-`ARCHIV`-Index (Karteireiter „Archiv") erscheint:
     /// `(OBJEKTBESCHREIBUNG, EXTERNOBJEKTART)`. `None` = nicht indexieren — ein
-    /// HKP entsteht in Z1 selbst und ist dort ohnehin sichtbar.
+    /// HKP entsteht in Z1 selbst und ist dort ohnehin sichtbar. Für den
+    /// Patienten-Upload ist die Beschreibung (Original-Dateiname) und der Typ
+    /// (Config) dynamisch — der wird nicht hier, sondern im Aufrufer aufgelöst
+    /// (daher `None`, damit der statische Weg ihn nicht doppelt behandelt).
     pub fn archiv_index(self) -> Option<(&'static str, u32)> {
         match self {
             DocumentKind::Anamnese => Some(("Anamnesebogen", 13)),
             DocumentKind::Rechnung => Some(("Rechnung", 12)),
             DocumentKind::Storno => Some(("Stornorechnung", 12)),
-            DocumentKind::Hkp => None,
+            DocumentKind::Hkp | DocumentKind::AnamneseUpload => None,
         }
     }
 
@@ -114,6 +130,7 @@ impl DocumentKind {
             "hkp" => Some(DocumentKind::Hkp),
             "rechnung" => Some(DocumentKind::Rechnung),
             "storno" => Some(DocumentKind::Storno),
+            "anamnese_upload" => Some(DocumentKind::AnamneseUpload),
             _ => None,
         }
     }
@@ -123,13 +140,28 @@ impl DocumentKind {
     /// Was der Cloud tatsächlich als unterstützt gemeldet wird, ist eine
     /// config-abhängige Teilmenge davon (Modul „Rechnungen im PVS ablegen") —
     /// siehe [`crate::config::ConnectorConfig::supported_document_kinds`].
-    pub const SUPPORTED_TAGS: &'static [&'static str] = &["anamnese", "hkp", "rechnung", "storno"];
+    pub const SUPPORTED_TAGS: &'static [&'static str] =
+        &["anamnese", "hkp", "rechnung", "storno", "anamnese_upload"];
 }
 
 pub struct ImportRequest<'a> {
     pub patient: &'a PatientContext,
+    /// Pfad zur abzulegenden Datei (PDF **oder** JPEG/PNG bei Patienten-Uploads).
     pub pdf_path: &'a Path,
     pub kind: DocumentKind,
+    /// Datei-Format für `EXT=` (VDDS Tabelle 7), z. B. `"PDF"`/`"JPG"`/`"PNG"`.
+    /// Leer ⇒ `"PDF"`.
+    pub ext: &'a str,
+    /// Überschreibt `(TYPE-Text, TYPENR)` — für die konfigurierbare Upload-
+    /// Dokumentart. `None` = aus [`DocumentKind::media_type`].
+    pub media_type_override: Option<(&'a str, u32)>,
+}
+
+impl<'a> ImportRequest<'a> {
+    /// Konstruktor für den Regelfall PDF ohne Typ-Override (Anamnese/HKP/Rechnung).
+    pub fn pdf(patient: &'a PatientContext, pdf_path: &'a Path, kind: DocumentKind) -> Self {
+        ImportRequest { patient, pdf_path, kind, ext: "PDF", media_type_override: None }
+    }
 }
 
 /// Ergebnis eines Ablage-Versuchs.
@@ -216,10 +248,18 @@ pub fn build_mmo_ini(
     let typenr = diag("PRAXISHUB_DIAG_TYPENR")
         .and_then(|s| s.trim().parse::<u32>().ok())
         .unwrap_or(def_typenr);
+    // EXT aus dem Request (PDF/JPG/PNG); leer ⇒ PDF (rückwärtskompatibel).
+    let req_ext = {
+        let e = req.ext.trim();
+        if e.is_empty() { "PDF".to_string() } else { e.to_ascii_uppercase() }
+    };
     let ext = diag("PRAXISHUB_DIAG_EXT")
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "PDF".to_string());
-    let colortype = diag("PRAXISHUB_DIAG_COLORTYPE").unwrap_or_else(|| "LINEART".to_string());
+        .unwrap_or(req_ext);
+    // Dokumente (PDF) → LINEART; Bilder (JPG/PNG) → COLOR.
+    let default_colortype = if ext.eq_ignore_ascii_case("PDF") { "LINEART" } else { "COLOR" };
+    let colortype =
+        diag("PRAXISHUB_DIAG_COLORTYPE").unwrap_or_else(|| default_colortype.to_string());
     // ASCII (kein Umlaut, CGData.Convert-sicher). Enthält die MMOID: ConVis
     // speichert das COMMENT-Feld und liefert es im MMO-Info-Export zurück —
     // darüber findet der Connector das Dokument fürs Z1-ARCHIV-Verlinken wieder.
@@ -320,8 +360,9 @@ fn run_import(
     media_type: (&str, u32),
 ) -> Result<bool> {
     let ini_path = write_exchange_ini(req, exchange_dir, mmoid, media_type)?;
-    // Dokumentkopie für den MMOEXPORT-Pull bereitlegen (ConVis holt sie ab).
-    stage_pdf(req.pdf_path, exchange_dir, mmoid)?;
+    // Dokumentkopie für den MMOEXPORT-Pull bereitlegen (ConVis holt sie ab) —
+    // unter dem kanonischen Namen mit der echten Endung (PDF/JPG/PNG).
+    stage_file(req.pdf_path, exchange_dir, mmoid, req.ext)?;
     // Konvention: `<programm> <pfad-zur-MMO.ini>` — exakte CLI-Signatur am Z1 verifizieren.
     let status = std::process::Command::new(import_program)
         .arg(&ini_path)
@@ -331,14 +372,14 @@ fn run_import(
     Ok(import_succeeded(&ini_path, status.success()))
 }
 
-/// Legt die Dokumentkopie unter dem kanonischen Namen ([`mmo_pdf_name`]) im
+/// Legt die Dokumentkopie unter dem kanonischen Namen ([`mmo_file_name`]) im
 /// Austauschordner ab, damit ConVis sie nach dem Push per MMOEXPORT abholen kann.
-/// No-op, wenn die Quelle schon genau dort liegt.
-fn stage_pdf(pdf_src: &Path, exchange_dir: &Path, mmoid: &str) -> Result<PathBuf> {
+/// `ext` bestimmt die Endung (PDF/JPG/PNG). No-op, wenn die Quelle schon dort liegt.
+fn stage_file(src: &Path, exchange_dir: &Path, mmoid: &str, ext: &str) -> Result<PathBuf> {
     std::fs::create_dir_all(exchange_dir)?;
-    let dst = exchange_dir.join(mmo_pdf_name(mmoid));
-    if pdf_src != dst {
-        std::fs::copy(pdf_src, &dst)?;
+    let dst = exchange_dir.join(mmo_file_name(mmoid, ext));
+    if src != dst {
+        std::fs::copy(src, &dst)?;
     }
     Ok(dst)
 }
@@ -376,14 +417,15 @@ pub fn import_once_diagnostic(
 ) -> Result<ImportDiagnostics> {
     if !req.pdf_path.exists() {
         return Err(ConnectorError::Vdds(format!(
-            "PDF nicht gefunden: {}",
+            "Datei nicht gefunden: {}",
             req.pdf_path.display()
         )));
     }
-    let sent_ini = build_mmo_ini(req, &VddsTarget::from_mmi_ini(), mmoid, req.kind.media_type());
-    let ini_path = write_exchange_ini(req, exchange_dir, mmoid, req.kind.media_type())?;
+    let mt = req.media_type_override.unwrap_or_else(|| req.kind.media_type());
+    let sent_ini = build_mmo_ini(req, &VddsTarget::from_mmi_ini(), mmoid, mt);
+    let ini_path = write_exchange_ini(req, exchange_dir, mmoid, mt)?;
     // Dokumentkopie für den MMOEXPORT-Pull bereitlegen (ConVis holt sie ab).
-    stage_pdf(req.pdf_path, exchange_dir, mmoid)?;
+    stage_file(req.pdf_path, exchange_dir, mmoid, req.ext)?;
     let status = std::process::Command::new(import_program)
         .arg(&ini_path)
         .status()
@@ -438,21 +480,25 @@ pub fn file_document(
 ) -> Result<FilingOutcome> {
     if !req.pdf_path.exists() {
         return Err(ConnectorError::Vdds(format!(
-            "PDF nicht gefunden: {}",
+            "Datei nicht gefunden: {}",
             req.pdf_path.display()
         )));
     }
 
+    // Effektiver VDDS-Typ: Config-Override (Patienten-Upload) hat Vorrang, sonst
+    // der statische Typ aus `kind`.
+    let media_type = req.media_type_override.unwrap_or_else(|| req.kind.media_type());
+
     // MMOINFIMPORT ordnet AUSSCHLIESSLICH über die PATID zu — Tabelle 5 kennt keinen
     // Namens-/Geburtsdatum-Match. Greift die PATID nicht, bleibt nur Variante A.
     if req.patient.has_patid() {
-        if run_import(import_program, req, exchange_dir, mmoid, req.kind.media_type())? {
+        if run_import(import_program, req, exchange_dir, mmoid, media_type)? {
             tracing::info!(patid = %req.patient.patient_id, "VDDS-media: Dokument per PATID abgelegt");
             return Ok(FilingOutcome::Filed { matched_by: "patient_id" });
         }
-        // Ablehnung kann am (neueren) TYPENR liegen — einmal mit dem
-        // Rückfall-Typ nachfassen, bevor das Dokument zurückgestellt wird.
-        if let Some(fallback) = req.kind.media_type_fallback() {
+        // Ablehnung kann am (neueren) TYPENR liegen — einmal mit dem Rückfall-Typ
+        // nachfassen. Bei gesetztem Override (Upload) gibt es keinen Rückfall.
+        if let Some(fallback) = req.media_type_override.is_none().then(|| req.kind.media_type_fallback()).flatten() {
             if run_import(import_program, req, exchange_dir, mmoid, fallback)? {
                 tracing::info!(patid = %req.patient.patient_id, typ = fallback.0,
                     "VDDS-media: Dokument per PATID abgelegt (Rückfall-Typ)");
@@ -495,11 +541,36 @@ pub fn is_media_invocation(arg: &str) -> bool {
         || up.contains("[MMOS]")
 }
 
-/// Kanonischer Dateiname der zwischengelagerten Dokumentkopie zu einer `MMOID`.
-/// Der MMOINFIMPORT-Push meldet die `MMOID`; ConVis holt die Datei anschließend
-/// per MMOEXPORT ab und findet sie unter genau diesem Namen im Austauschordner.
+/// Kanonischer Dateiname der zwischengelagerten Dokumentkopie zu einer `MMOID`
+/// mit der echten Endung (`pdf`/`jpg`/`png`). Der MMOINFIMPORT-Push meldet die
+/// `MMOID`; ConVis holt die Datei anschließend per MMOEXPORT ab.
+pub fn mmo_file_name(mmoid: &str, ext: &str) -> String {
+    let e = ext.trim().to_ascii_lowercase();
+    let e = if e.is_empty() { "pdf".to_string() } else { e };
+    format!("praxishub_mmo_{mmoid}.{e}")
+}
+
+/// Rückwärtskompatibel: der PDF-Name (die meisten Belege sind PDFs).
 pub fn mmo_pdf_name(mmoid: &str) -> String {
-    format!("praxishub_mmo_{mmoid}.pdf")
+    mmo_file_name(mmoid, "pdf")
+}
+
+/// Findet die zwischengelagerte Kopie zu `mmoid` **unabhängig von der Endung**
+/// (`praxishub_mmo_<mmoid>.<ext>`) — der MMOEXPORT-Abruf nennt nur die `MMOID`,
+/// nicht das Format. Der Punkt nach der MMOID verhindert Präfix-Verwechslungen
+/// (`…_abc.` matcht nicht `…_abc1.`).
+fn staged_file_for(exchange_dir: &Path, mmoid: &str) -> Option<PathBuf> {
+    let prefix = format!("praxishub_mmo_{mmoid}.");
+    std::fs::read_dir(exchange_dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with(&prefix))
+                .unwrap_or(false)
+        })
 }
 
 // ── MMO-Info-Export: PA-Dokument-ID nach dem Import wiederfinden ─────────────
@@ -621,13 +692,14 @@ pub fn handle_export_request(ini_path: &Path, exchange_dir: &Path) -> Result<Exp
         if mmoid.is_empty() {
             continue;
         }
-        let pdf = exchange_dir.join(mmo_pdf_name(&mmoid));
-        if pdf.exists() {
-            // [MMOPATH] MMOIDk = Pfad zur bereitgestellten Dateikopie (Tabelle 9).
-            ini.set("MMOPATH", &key, &pdf.to_string_lossy());
-            out.resolved += 1;
-        } else {
-            out.missing.push(mmoid);
+        // Datei endungs-unabhängig auflösen (PDF/JPG/PNG) — der Abruf nennt nur die MMOID.
+        match staged_file_for(exchange_dir, &mmoid) {
+            Some(file) => {
+                // [MMOPATH] MMOIDk = Pfad zur bereitgestellten Dateikopie (Tabelle 9).
+                ini.set("MMOPATH", &key, &file.to_string_lossy());
+                out.resolved += 1;
+            }
+            None => out.missing.push(mmoid),
         }
     }
 
@@ -766,7 +838,7 @@ mod tests {
     fn mmo_ini_anamnese_schema_ist_vdds_konform() {
         let patient = patient_full();
         let pdf = PathBuf::from("C:\\tmp\\anamnese.pdf");
-        let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Anamnese };
+        let req = ImportRequest::pdf(&patient, &pdf, DocumentKind::Anamnese);
         let ini = build_mmo_ini(&req, &test_target(), "PH-TEST", req.kind.media_type());
         // Kopfsektion: Zuordnung NUR über PATID, mit PVS/BVS/FROMPVS/PRXNR.
         assert!(ini.contains("[PATID]\r\nPVS=CDP_Z1\r\n"));
@@ -799,7 +871,7 @@ mod tests {
     fn mmo_ini_hkp_nutzt_typenr_14() {
         let patient = patient_full();
         let pdf = PathBuf::from("C:\\tmp\\hkp.pdf");
-        let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Hkp };
+        let req = ImportRequest::pdf(&patient, &pdf, DocumentKind::Hkp);
         let ini = build_mmo_ini(&req, &test_target(), "PH-TEST", req.kind.media_type());
         assert!(ini.contains("TYPENR=14")); // Heil- und Kostenplan
         assert!(ini.contains("TYPE=Heil- und Kostenplan"));
@@ -819,7 +891,7 @@ mod tests {
         let patient = patient_full();
         let pdf = PathBuf::from("C:\\tmp\\rechnung.pdf");
         for kind in [DocumentKind::Rechnung, DocumentKind::Storno] {
-            let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind };
+            let req = ImportRequest::pdf(&patient, &pdf, kind);
             let ini = build_mmo_ini(&req, &test_target(), "PH-TEST", req.kind.media_type());
             assert!(ini.contains("TYPENR=12"), "{kind:?} → Rechnung/Typ 12");
             assert!(ini.contains("TYPE=Rechnung"));
@@ -854,6 +926,60 @@ mod tests {
         assert_eq!(DocumentKind::Rechnung.archiv_index(), Some(("Rechnung", 12)));
         assert_eq!(DocumentKind::Storno.archiv_index(), Some(("Stornorechnung", 12)));
         assert_eq!(DocumentKind::Hkp.archiv_index(), None); // HKP entsteht in Z1 selbst
+        // Upload: statischer Weg liefert None, der Typ wird im Aufrufer (Config) aufgelöst.
+        assert_eq!(DocumentKind::AnamneseUpload.archiv_index(), None);
+    }
+
+    #[test]
+    fn from_tag_kennt_anamnese_upload() {
+        assert_eq!(DocumentKind::from_tag("anamnese_upload"), Some(DocumentKind::AnamneseUpload));
+    }
+
+    #[test]
+    fn mmo_file_name_traegt_die_endung() {
+        assert_eq!(mmo_file_name("abc", "JPG"), "praxishub_mmo_abc.jpg");
+        assert_eq!(mmo_file_name("abc", "png"), "praxishub_mmo_abc.png");
+        assert_eq!(mmo_file_name("abc", ""), "praxishub_mmo_abc.pdf"); // leer = pdf
+        assert_eq!(mmo_pdf_name("abc"), "praxishub_mmo_abc.pdf");
+    }
+
+    #[test]
+    fn mmo_ini_upload_nutzt_ext_und_config_typ() {
+        let patient = patient_full();
+        let pdf = PathBuf::from("C:\\tmp\\roentgen.jpg");
+        // Upload: ext=JPG + Config-Override (Typ 24 „Dokument").
+        let req = ImportRequest {
+            patient: &patient,
+            pdf_path: &pdf,
+            kind: DocumentKind::AnamneseUpload,
+            ext: "JPG",
+            media_type_override: Some(("Dokument", 24)),
+        };
+        let mt = req.media_type_override.unwrap();
+        let ini = build_mmo_ini(&req, &test_target(), "PH-UP", mt);
+        assert!(ini.contains("TYPENR=24"));
+        assert!(ini.contains("TYPE=Dokument"));
+        assert!(ini.contains("EXT=JPG"));
+        assert!(ini.contains("COLORTYPE=COLOR")); // Bild, nicht LINEART
+    }
+
+    #[test]
+    fn export_loest_datei_endungs_unabhaengig_auf() {
+        let dir = std::env::temp_dir().join("praxishub_test_export_ext");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Kopie liegt als .jpg (nicht .pdf) vor — der Abruf nennt nur die MMOID.
+        std::fs::write(dir.join(mmo_file_name("IMG1", "JPG")), b"\xFF\xD8\xFF test-jpeg").unwrap();
+        let req_ini = dir.join("export_req.ini");
+        std::fs::write(&req_ini, b"[MMOIDS]\r\nCOUNT=1\r\nMMOID1=IMG1\r\nREADY=0\r\n").unwrap();
+
+        let out = handle_export_request(&req_ini, &dir).unwrap();
+        assert_eq!(out.resolved, 1);
+        assert!(out.missing.is_empty());
+        let after = std::fs::read(&req_ini).unwrap();
+        let (text, _, _) = WINDOWS_1252.decode(&after);
+        assert!(text.contains("praxishub_mmo_IMG1.jpg"));
+        assert!(text.contains("ERRORLEVEL=0"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -892,7 +1018,7 @@ mod tests {
     fn kaskade_filed_wenn_programm_erfolg_meldet() {
         let pdf = dummy_pdf();
         let patient = patient_full();
-        let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Anamnese };
+        let req = ImportRequest::pdf(&patient, &pdf, DocumentKind::Anamnese);
         let out = file_document(Path::new("/usr/bin/true"), &req, &std::env::temp_dir(), "t-ok").unwrap();
         assert_eq!(out, FilingOutcome::Filed { matched_by: "patient_id" });
     }
@@ -902,7 +1028,7 @@ mod tests {
     fn kaskade_deferred_wenn_programm_immer_ablehnt() {
         let pdf = dummy_pdf();
         let patient = patient_full(); // PATID + Name/DOB → beide Versuche scheitern an /usr/bin/false
-        let req = ImportRequest { patient: &patient, pdf_path: &pdf, kind: DocumentKind::Anamnese };
+        let req = ImportRequest::pdf(&patient, &pdf, DocumentKind::Anamnese);
         let out = file_document(Path::new("/usr/bin/false"), &req, &std::env::temp_dir(), "t-def").unwrap();
         assert!(matches!(out, FilingOutcome::Deferred(_)));
     }
@@ -911,7 +1037,7 @@ mod tests {
     fn kaskade_fehlt_pdf_ist_fehler() {
         let patient = patient_full();
         let missing = PathBuf::from("/pfad/gibtsnicht-12345.pdf");
-        let req = ImportRequest { patient: &patient, pdf_path: &missing, kind: DocumentKind::Anamnese };
+        let req = ImportRequest::pdf(&patient, &missing, DocumentKind::Anamnese);
         assert!(file_document(Path::new("/usr/bin/true"), &req, &std::env::temp_dir(), "t-err").is_err());
     }
 

@@ -35,6 +35,9 @@ fn default_control_hour() -> u8 {
 fn default_control_months() -> u32 {
     36
 }
+fn default_upload_typenr() -> u32 {
+    24 // VDDS Tabelle 15 „Allgemeines Dokument" — neutraler Bucket für Patienten-Uploads.
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectorConfig {
@@ -169,6 +172,13 @@ pub struct ConnectorConfig {
     /// liefert die Cloud gar keine Belege. Aktiviert automatisch `writeback_notes`.
     #[serde(default)]
     pub pvs_file_invoices: bool,
+    /// VDDS-Objekttyp (Tabelle 15) für vom Patienten in der Anamnese hochgeladene
+    /// Dateien (`anamnese_upload`: Röntgen/Foto/Medikationsplan). Steuert die
+    /// Kategorie in PraxisArchiv/Z1-Archiv. Default 24 („Allgemeines Dokument");
+    /// NICHT 13 (Anamnesebogen). Alternativen laut Praxis-Bestand: 8 Bild/Foto,
+    /// 7 Foto, 11 Fremdbefund.
+    #[serde(default = "default_upload_typenr")]
+    pub upload_document_typenr: u32,
 }
 
 fn default_true() -> bool {
@@ -211,6 +221,7 @@ impl Default for ConnectorConfig {
             writeback_co_to_risk: false,
             writeback_archiv_link: false,
             pvs_file_invoices: false,
+            upload_document_typenr: default_upload_typenr(),
         }
     }
 }
@@ -320,7 +331,8 @@ impl ConnectorConfig {
     /// Storno nur mit aktivem Modul „Rechnungen im PVS ablegen" — sonst liefert
     /// die Cloud gar keine Belege dieses Typs aus.
     pub fn supported_document_kinds(&self) -> Vec<&'static str> {
-        let mut kinds = vec!["anamnese", "hkp"];
+        // Anamnese/HKP/Patienten-Uploads gehören zum Aufnahme-Kernfluss (immer an).
+        let mut kinds = vec!["anamnese", "hkp", "anamnese_upload"];
         if self.pvs_file_invoices {
             kinds.push("rechnung");
             kinds.push("storno");

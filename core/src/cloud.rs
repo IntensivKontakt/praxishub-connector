@@ -68,9 +68,17 @@ pub struct HkpReport {
 pub struct PendingDocument {
     /// Backend-Dokument-ID (Idempotenz-/Ack-Schlüssel).
     pub id: String,
-    /// `"anamnese"` | `"hkp"`.
+    /// `"anamnese"` | `"hkp"` | `"rechnung"` | `"storno"` | `"anamnese_upload"`.
     #[serde(default)]
     pub kind: String,
+    /// MIME-Typ des Objekts. Leer ⇒ PDF (rückwärtskompatibel für generierte Belege).
+    /// Bei `kind="anamnese_upload"` genau einer von `application/pdf` |
+    /// `image/jpeg` | `image/png` (HEIC/WEBP wandelt die Cloud vorab nach JPEG).
+    #[serde(default)]
+    pub content_type: String,
+    /// Original-Dateiname (z. B. `"roentgen.jpg"`); leer bei generierten PDFs.
+    #[serde(default)]
+    pub filename: String,
     /// Z1-interne PATID, falls dem Backend bekannt (sonst leer → Fallback).
     #[serde(default)]
     pub patient_id: String,

@@ -181,16 +181,25 @@ async fn file_one(
         ));
     }
 
-    let pdf_bytes = STANDARD
+    // Datei-Format aus dem MIME-Typ (Patienten-Uploads sind JPG/PNG/PDF; leer = PDF).
+    let ext = ext_for_content_type(&doc.content_type).ok_or_else(|| {
+        crate::error::ConnectorError::Vdds(format!(
+            "nicht unterstützter content_type \"{}\" für Dokument {} — erlaubt: PDF/JPEG/PNG",
+            doc.content_type.trim(),
+            doc.id
+        ))
+    })?;
+
+    let bytes = STANDARD
         .decode(doc.pdf_base64.as_bytes())
-        .map_err(|e| crate::error::ConnectorError::Vdds(format!("PDF Base64 ungültig: {e}")))?;
+        .map_err(|e| crate::error::ConnectorError::Vdds(format!("Datei-Base64 ungültig: {e}")))?;
     // MMOID = stabile, dateinamen-sichere Dokument-ID. Die Kopie wird unter dem
-    // kanonischen Namen (media::mmo_pdf_name) im Austauschordner abgelegt, damit
-    // ConVis sie nach dem Push per MMOEXPORT (Pull) genau darüber abholen kann.
+    // kanonischen Namen (media::mmo_file_name, echte Endung) im Austauschordner
+    // abgelegt, damit ConVis sie nach dem Push per MMOEXPORT (Pull) abholen kann.
     let mmoid = sanitize(&doc.id);
-    let pdf_path = exchange_dir.join(media::mmo_pdf_name(&mmoid));
+    let staged_path = exchange_dir.join(media::mmo_file_name(&mmoid, ext));
     std::fs::create_dir_all(exchange_dir)?;
-    std::fs::write(&pdf_path, &pdf_bytes)?;
+    std::fs::write(&staged_path, &bytes)?;
 
     // Effektive Z1-PATID bestimmen — Kaskade:
     //   1. explizit übergeben (Variante A: der gerade in Z1 geöffnete Patient),
@@ -292,10 +301,15 @@ async fn file_one(
         first_name: doc.first_name.clone(),
         birth_date: doc.birth_date.clone(),
     };
+    // Patienten-Upload nutzt die konfigurierbare Dokumentart; sonst der statische Typ.
+    let upload_type = ("Dokument", cfg.upload_document_typenr);
+    let media_type_override = matches!(kind, DocumentKind::AnamneseUpload).then_some(upload_type);
     let req = ImportRequest {
         patient: &patient,
-        pdf_path: &pdf_path,
+        pdf_path: &staged_path,
         kind,
+        ext,
+        media_type_override,
     };
 
     // Die Dokumentkopie bewusst NICHT sofort löschen: ConVis holt sie erst per
@@ -304,10 +318,17 @@ async fn file_one(
     let outcome = media::file_document(import_program, &req, exchange_dir, &mmoid)?;
 
     if let FilingOutcome::Filed { matched_by } = &outcome {
-        // Anamnese im Z1-Karteireiter „Archiv" sichtbar machen (Nelly-Parität):
-        // PA-MMOID über den MMO-Info-Export suchen und die ARCHIV-Indexzeile
-        // schreiben. Best effort — ein Fehler hier lässt die Ablage bestehen.
-        if let Err(e) = link_in_z1_archiv(cfg, exchange_dir, &patient.patient_id, &mmoid, req.kind).await {
+        // Dokument im Z1-Karteireiter „Archiv" sichtbar machen: PA-MMOID über den
+        // MMO-Info-Export suchen und die ARCHIV-Indexzeile schreiben. Upload →
+        // (Original-Dateiname, Config-Typ); sonst der statische Typ des kind.
+        // Best effort — ein Fehler hier lässt die Ablage bestehen.
+        let archiv = match kind {
+            DocumentKind::AnamneseUpload => {
+                Some((upload_beschreibung(&doc.filename), cfg.upload_document_typenr))
+            }
+            other => other.archiv_index().map(|(b, e)| (b.to_string(), e)),
+        };
+        if let Err(e) = link_in_z1_archiv(cfg, exchange_dir, &patient.patient_id, &mmoid, archiv).await {
             warn!(id = %doc.id, error = %e, "Z1-ARCHIV-Verlinkung fehlgeschlagen (Dokument liegt in PA)");
         }
         // Wurde die PATID per Weg-A-Lookup aufgelöst, das der Cloud so melden
@@ -334,14 +355,14 @@ async fn link_in_z1_archiv(
     exchange_dir: &Path,
     patid: &str,
     doc_mmoid: &str,
-    kind: DocumentKind,
+    archiv: Option<(String, u32)>,
 ) -> Result<()> {
     if !cfg.archiv_link_enabled() || !cfg.z1db_write_login_configured() {
         return Ok(());
     }
     // Wie erscheint der Beleg im Z1-Archiv-Index? `None` (z. B. HKP — entsteht in
     // Z1 selbst und ist dort schon sichtbar) ⇒ nichts zu verlinken.
-    let Some((beschreibung, externobjektart)) = kind.archiv_index() else {
+    let Some((beschreibung, externobjektart)) = archiv else {
         return Ok(());
     };
     let patid = patid.trim().to_string();
@@ -389,10 +410,10 @@ async fn link_in_z1_archiv(
         return Ok(());
     };
     let inserted =
-        crate::z1db::archiv::link_pa_document(cfg, &patid, &pa_mmoid, beschreibung, externobjektart)
+        crate::z1db::archiv::link_pa_document(cfg, &patid, &pa_mmoid, &beschreibung, externobjektart)
             .await?;
     if inserted {
-        info!(patid = %patid, mmoid = %pa_mmoid, typ = beschreibung, "Z1-ARCHIV-Zeile geschrieben — Dokument im Archiv-Reiter sichtbar");
+        info!(patid = %patid, mmoid = %pa_mmoid, typ = %beschreibung, "Z1-ARCHIV-Zeile geschrieben — Dokument im Archiv-Reiter sichtbar");
     } else {
         debug!(patid = %patid, mmoid = %pa_mmoid, "Z1-ARCHIV-Zeile existiert bereits");
     }
@@ -421,6 +442,29 @@ fn matches_patient(doc: &PendingDocument, patient: &PatientContext) -> bool {
     doc_key.matches(&pat_key)
 }
 
+/// VDDS-`EXT` (Dateiformat) aus dem MIME-Typ. Leer ⇒ `"PDF"` (rückwärtskompatibel
+/// für die generierten Belege). `None` = nicht unterstützter Typ — der Aufrufer
+/// meldet den Beleg als `/failed` (kein Abbruch der Poll-Schleife).
+fn ext_for_content_type(content_type: &str) -> Option<&'static str> {
+    match content_type.trim().to_ascii_lowercase().as_str() {
+        "" | "application/pdf" => Some("PDF"),
+        "image/jpeg" | "image/jpg" => Some("JPG"),
+        "image/png" => Some("PNG"),
+        _ => None,
+    }
+}
+
+/// Anzeigename eines Patienten-Uploads für die Z1-`ARCHIV`-`OBJEKTBESCHREIBUNG`
+/// (dort auf 50 Zeichen gekürzt): der Originaldateiname, sonst ein Fallback.
+fn upload_beschreibung(filename: &str) -> String {
+    let f = filename.trim();
+    if f.is_empty() {
+        "Patienten-Upload".to_string()
+    } else {
+        f.to_string()
+    }
+}
+
 /// Dateinamens-sichere Variante der Dokument-ID (nur a–z, 0–9, `-`, `_`).
 fn sanitize(id: &str) -> String {
     let s: String = id
@@ -442,6 +486,8 @@ mod tests {
         PendingDocument {
             id: id.into(),
             kind: "anamnese".into(),
+            content_type: String::new(),
+            filename: String::new(),
             patient_id: patid.into(),
             last_name: name.into(),
             first_name: "Erika".into(),
@@ -450,6 +496,21 @@ mod tests {
             email: String::new(),
             pdf_base64: String::new(),
         }
+    }
+
+    #[test]
+    fn content_type_mapping() {
+        assert_eq!(ext_for_content_type(""), Some("PDF")); // leer = PDF (Alt-Belege)
+        assert_eq!(ext_for_content_type("application/pdf"), Some("PDF"));
+        assert_eq!(ext_for_content_type("image/jpeg"), Some("JPG"));
+        assert_eq!(ext_for_content_type("IMAGE/PNG"), Some("PNG")); // case-insensitiv
+        assert_eq!(ext_for_content_type("image/gif"), None); // nicht unterstützt → /failed
+    }
+
+    #[test]
+    fn upload_beschreibung_nutzt_dateinamen_mit_fallback() {
+        assert_eq!(upload_beschreibung("roentgen.jpg"), "roentgen.jpg");
+        assert_eq!(upload_beschreibung("  "), "Patienten-Upload");
     }
 
     fn patient(patid: &str, name: &str, dob: &str) -> PatientContext {
