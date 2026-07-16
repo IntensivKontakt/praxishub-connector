@@ -15,3 +15,12 @@ dist/
 .env.local
 *.pfx
 *.snk
+
+# Z1-Daten NIEMALS committen (echte Patientendaten / PHI, DSGVO).
+# Nur db/z1-schema.sql (Struktur) und Skripte sind erlaubt; Daten bleiben lokal.
+db/local-data/
+db/*.bak
+db/*.bacpac
+db/*-data*.sql
+*.z1dump
+z1-local-copy/
