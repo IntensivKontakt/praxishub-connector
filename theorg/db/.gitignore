@@ -1,0 +1,11 @@
+# THEORG-Nachbildung: Datenbankdateien und erzeugte Daten nicht committen.
+# Echte THEORG-Daten (Sicherungen, Datenbankdateien, Exporte) gehoeren nie in dieses Repo.
+daten/
+*.fdb
+*.gdb
+*.fbk
+*.gbk
+*.nbk
+daten.sql
+*-daten.sql
+__pycache__/

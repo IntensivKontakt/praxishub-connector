@@ -1,0 +1,27 @@
+# Firebird fuer die THEORG-Nachbildung (nur erfundene Daten, siehe README.md).
+#
+#   FB_TAG=v3.0.10 docker compose up -d        # Standard: Firebird 3.0
+#   FB_TAG=v2.5.9-ss docker compose up -d      # Firebird 2.5 (SuperServer)
+#
+# Die Firebird-Version soll der von THEORG entsprechen (S1-profil_*.json,
+# "firebird.version"): Firebird 3 oeffnet keine 2.5-Datenbanken und umgekehrt.
+# Tags: https://hub.docker.com/r/jacobalberty/firebird/tags (v2.5.9-ss, v3.0.10, v4.0.2, v5.0.0)
+#
+# Keine veroeffentlichten Ports. Zugriff ueber `docker compose exec` oder aus
+# Containern im selben Netz (Hostname `firebird`, Port 3050). Fuer einen Zugriff
+# vom eigenen Rechner zusaetzlich docker-compose.port.yml (nur 127.0.0.1).
+# Zwei Versionen gleichzeitig: zusaetzlich COMPOSE_PROJECT_NAME je Version setzen.
+
+name: theorg-nachbildung
+
+services:
+  firebird:
+    image: jacobalberty/firebird:${FB_TAG:-v3.0.10}
+    environment:
+      # Nur fuer die lokale Nachbildung; die Datenbank enthaelt nie echte Daten.
+      ISC_PASSWORD: ${FB_PASSWORT:-nachbildung}
+      TZ: Europe/Berlin
+    volumes:
+      # je Firebird-Version eigener Ordner (Dateiformat ODS ist versionsabhaengig)
+      - ./daten/${FB_TAG:-v3.0.10}:/firebird/data
+    restart: "no"

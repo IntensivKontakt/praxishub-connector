@@ -1,0 +1,153 @@
+{
+  "werkzeug": "S1-erkundung",
+  "format": 1,
+  "erstellt": "2026-11-20T10:00:00+01:00",
+  "firebird": {"version":"2.5.9","dialekt":3,"zeichensatz":"WIN1252","ods":"11.2"},
+  "tabellen": [
+    {"name":"ARBEITSPLATZ","zeilen":6,"stichprobe":null,"spalten":[
+      {"name":"AP_NAME","typ":"VARCHAR(30)","nullbar":false,"gefuellt":6,"verschieden":6,"laenge_min":5,"laenge_max":9,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":6,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"AKT_PATNR","typ":"CHAR(10)","nullbar":true,"gefuellt":3,"verschieden":3,"laenge_min":1,"laenge_max":4,"formen":{"ziffern":3,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":3,"linksbuendig":0,"buchstaben":0,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"ANGEMELDET","typ":"TIMESTAMP","nullbar":true,"gefuellt":5,"verschieden":5,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":{"2026":5},"codewerte":null}
+    ]},
+    {"name":"ARBEITSZEIT","zeilen":70,"stichprobe":null,"spalten":[
+      {"name":"AZ_ID","typ":"INTEGER","nullbar":false,"gefuellt":70,"verschieden":70,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"TH_ID","typ":"INTEGER","nullbar":false,"gefuellt":70,"verschieden":14,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"WOCHENTAG","typ":"SMALLINT","nullbar":true,"gefuellt":70,"verschieden":5,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"VON","typ":"TIME","nullbar":true,"gefuellt":70,"verschieden":7,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"BIS","typ":"TIME","nullbar":true,"gefuellt":70,"verschieden":8,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"GUELTIG_AB","typ":"DATE","nullbar":true,"gefuellt":63,"verschieden":9,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":{"2022":10,"2024":20,"2025":33},"codewerte":null}
+    ]},
+    {"name":"CHECKIN","zeilen":23000,"stichprobe":null,"spalten":[
+      {"name":"CHECKIN_ID","typ":"BIGINT","nullbar":false,"gefuellt":23000,"verschieden":23000,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"PATNR","typ":"CHAR(10)","nullbar":true,"gefuellt":23000,"verschieden":322,"laenge_min":1,"laenge_max":4,"formen":{"ziffern":23000,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":23000,"linksbuendig":0,"buchstaben":0,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"ZEITPUNKT","typ":"TIMESTAMP","nullbar":true,"gefuellt":23000,"verschieden":23000,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":{"2024":6000,"2025":9000,"2026":8000},"codewerte":null},
+      {"name":"GERAET","typ":"VARCHAR(20)","nullbar":true,"gefuellt":23000,"verschieden":5,"laenge_min":6,"laenge_max":12,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":23000,"geld":0},"jahre":null,"codewerte":null}
+    ]},
+    {"name":"DOKUMENT","zeilen":7400,"stichprobe":null,"spalten":[
+      {"name":"DOK_ID","typ":"INTEGER","nullbar":false,"gefuellt":7400,"verschieden":7400,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"PATNR","typ":"CHAR(10)","nullbar":true,"gefuellt":7400,"verschieden":3330,"laenge_min":1,"laenge_max":4,"formen":{"ziffern":7400,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":7400,"linksbuendig":0,"buchstaben":0,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"ART","typ":"CHAR(3)","nullbar":true,"gefuellt":7400,"verschieden":3,"laenge_min":3,"laenge_max":3,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":7400,"geld":0},"jahre":null,"codewerte":[{"wert":"PDF","anzahl":5100},{"wert":"JPG","anzahl":1900},{"wert":"TXT","anzahl":400}]},
+      {"name":"TITEL","typ":"VARCHAR(80)","nullbar":true,"gefuellt":6660,"verschieden":2664,"laenge_min":5,"laenge_max":70,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":6660,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"INHALT","typ":"BLOB SUB_TYPE 0","nullbar":true,"gefuellt":7252,"verschieden":null,"laenge_min":2200,"laenge_max":4800000,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"ANGELEGT","typ":"TIMESTAMP","nullbar":true,"gefuellt":7400,"verschieden":7326,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":{"2021":800,"2022":1100,"2023":1300,"2024":1400,"2025":1500,"2026":1300},"codewerte":null}
+    ]},
+    {"name":"KONFIG","zeilen":240,"stichprobe":null,"spalten":[
+      {"name":"SCHLUESSEL","typ":"VARCHAR(40)","nullbar":false,"gefuellt":240,"verschieden":240,"laenge_min":6,"laenge_max":34,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":240,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"WERT","typ":"VARCHAR(200)","nullbar":true,"gefuellt":221,"verschieden":99,"laenge_min":1,"laenge_max":180,"formen":{"ziffern":77,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":110,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"MODUL","typ":"VARCHAR(20)","nullbar":true,"gefuellt":228,"verschieden":11,"laenge_min":4,"laenge_max":16,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":228,"geld":0},"jahre":null,"codewerte":null}
+    ]},
+    {"name":"KURS","zeilen":18,"stichprobe":null,"spalten":[
+      {"name":"KURS_ID","typ":"INTEGER","nullbar":false,"gefuellt":18,"verschieden":18,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"BEZEICHNUNG","typ":"VARCHAR(60)","nullbar":true,"gefuellt":18,"verschieden":14,"laenge_min":8,"laenge_max":34,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":18,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"ART","typ":"CHAR(2)","nullbar":true,"gefuellt":18,"verschieden":3,"laenge_min":2,"laenge_max":2,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":18,"geld":0},"jahre":null,"codewerte":[{"wert":"RS","anzahl":11},{"wert":"FT","anzahl":5},{"wert":"PR","anzahl":2}]},
+      {"name":"TH_ID","typ":"INTEGER","nullbar":true,"gefuellt":18,"verschieden":7,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"WOCHENTAG","typ":"SMALLINT","nullbar":true,"gefuellt":18,"verschieden":5,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"BEGINN","typ":"TIME","nullbar":true,"gefuellt":18,"verschieden":11,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"PLAETZE","typ":"SMALLINT","nullbar":true,"gefuellt":18,"verschieden":3,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"POSITION","typ":"SMALLINT","nullbar":true,"gefuellt":9,"verschieden":9,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null}
+    ]},
+    {"name":"MANDANT","zeilen":3,"stichprobe":null,"spalten":[
+      {"name":"MANDANT_NR","typ":"SMALLINT","nullbar":false,"gefuellt":3,"verschieden":3,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"BEZEICHNUNG","typ":"VARCHAR(60)","nullbar":true,"gefuellt":3,"verschieden":3,"laenge_min":14,"laenge_max":38,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":3,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"IK","typ":"CHAR(9)","nullbar":true,"gefuellt":3,"verschieden":3,"laenge_min":9,"laenge_max":9,"formen":{"ziffern":3,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":0,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"AKTIV","typ":"CHAR(1)","nullbar":true,"gefuellt":3,"verschieden":2,"laenge_min":1,"laenge_max":1,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":3,"geld":0},"jahre":null,"codewerte":[{"wert":"J","anzahl":2},{"wert":"N","anzahl":1}]}
+    ]},
+    {"name":"OPOSTEN","zeilen":2600,"stichprobe":null,"spalten":[
+      {"name":"OP_ID","typ":"INTEGER","nullbar":false,"gefuellt":2600,"verschieden":2600,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"PATNR","typ":"CHAR(10)","nullbar":true,"gefuellt":2600,"verschieden":1300,"laenge_min":1,"laenge_max":4,"formen":{"ziffern":2600,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":2600,"linksbuendig":0,"buchstaben":0,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"BELEGNR","typ":"VARCHAR(12)","nullbar":true,"gefuellt":2600,"verschieden":2600,"laenge_min":8,"laenge_max":9,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":2600,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"BETRAG","typ":"VARCHAR(12)","nullbar":true,"gefuellt":2600,"verschieden":780,"laenge_min":6,"laenge_max":10,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":2600,"geld":2600},"jahre":null,"codewerte":null},
+      {"name":"OFFEN","typ":"VARCHAR(12)","nullbar":true,"gefuellt":2600,"verschieden":650,"laenge_min":6,"laenge_max":10,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":2600,"geld":2600},"jahre":null,"codewerte":null},
+      {"name":"STORNO","typ":"CHAR(1)","nullbar":true,"gefuellt":2600,"verschieden":2,"laenge_min":1,"laenge_max":1,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":2600,"geld":0},"jahre":null,"codewerte":[{"wert":"N","anzahl":2540},{"wert":"J","anzahl":60}]},
+      {"name":"BELEGDATUM","typ":"CHAR(8)","nullbar":true,"gefuellt":2600,"verschieden":780,"laenge_min":8,"laenge_max":8,"formen":{"ziffern":2600,"datum_jjjjmmtt":2600,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":0,"geld":0},"jahre":{"2021":281,"2022":386,"2023":456,"2024":491,"2025":527,"2026":459},"codewerte":null}
+    ]},
+    {"name":"PATIENT","zeilen":4200,"stichprobe":null,"spalten":[
+      {"name":"PATNR","typ":"CHAR(10)","nullbar":false,"gefuellt":4200,"verschieden":4200,"laenge_min":1,"laenge_max":4,"formen":{"ziffern":4200,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":4200,"linksbuendig":0,"buchstaben":0,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"MANDANT_NR","typ":"SMALLINT","nullbar":false,"gefuellt":4200,"verschieden":3,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"NAME","typ":"VARCHAR(40)","nullbar":true,"gefuellt":4200,"verschieden":2310,"laenge_min":3,"laenge_max":22,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":4200,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"VORNAME","typ":"VARCHAR(30)","nullbar":true,"gefuellt":4158,"verschieden":499,"laenge_min":2,"laenge_max":14,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":4158,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"GEBDAT","typ":"CHAR(8)","nullbar":true,"gefuellt":4074,"verschieden":3463,"laenge_min":8,"laenge_max":8,"formen":{"ziffern":4074,"datum_jjjjmmtt":4074,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":0,"geld":0},"jahre":{"1932":39,"1933":41,"1934":41,"1935":41,"1936":43,"1937":43,"1938":43,"1939":45,"1940":45,"1941":45,"1942":47,"1943":47,"1944":47,"1945":49,"1946":49,"1947":49,"1948":51,"1949":51,"1950":51,"1951":53,"1952":53,"1953":53,"1954":55,"1955":55,"1956":55,"1957":57,"1958":57,"1959":57,"1960":59,"1961":59,"1962":59,"1963":61,"1964":61,"1965":61,"1966":61,"1967":61,"1968":59,"1969":59,"1970":59,"1971":57,"1972":57,"1973":57,"1974":55,"1975":55,"1976":55,"1977":53,"1978":53,"1979":53,"1980":51,"1981":51,"1982":51,"1983":49,"1984":49,"1985":49,"1986":47,"1987":47,"1988":47,"1989":45,"1990":45,"1991":45,"1992":43,"1993":43,"1994":43,"1995":41,"1996":41,"1997":41,"1998":39,"1999":39,"2000":39,"2001":37,"2002":37,"2003":37,"2004":35,"2005":35,"2006":35,"2007":33,"2008":33,"2009":33,"2010":30,"2011":30,"2012":30,"2013":28,"2014":28,"2015":28,"2016":26,"2017":26,"2018":72},"codewerte":null},
+      {"name":"GESCHLECHT","typ":"CHAR(1)","nullbar":true,"gefuellt":4104,"verschieden":3,"laenge_min":1,"laenge_max":1,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":4104,"geld":0},"jahre":null,"codewerte":[{"wert":"W","anzahl":2350},{"wert":"M","anzahl":1750},{"wert":null,"anzahl":96},{"wert":"D","anzahl":4}]},
+      {"name":"STRASSE","typ":"VARCHAR(50)","nullbar":true,"gefuellt":3906,"verschieden":2344,"laenge_min":6,"laenge_max":31,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":3906,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"PLZ","typ":"CHAR(5)","nullbar":true,"gefuellt":3906,"verschieden":312,"laenge_min":5,"laenge_max":5,"formen":{"ziffern":3906,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":0,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"ORT","typ":"VARCHAR(40)","nullbar":true,"gefuellt":3906,"verschieden":156,"laenge_min":3,"laenge_max":24,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":3906,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"TELEFON","typ":"VARCHAR(30)","nullbar":true,"gefuellt":3402,"verschieden":3334,"laenge_min":8,"laenge_max":16,"formen":{"ziffern":1871,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":0,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"EMAIL","typ":"VARCHAR(80)","nullbar":true,"gefuellt":1596,"verschieden":1580,"laenge_min":10,"laenge_max":41,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":32,"buchstaben":1596,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"KASSE_IK","typ":"CHAR(9)","nullbar":true,"gefuellt":3780,"verschieden":76,"laenge_min":9,"laenge_max":9,"formen":{"ziffern":3780,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":0,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"VERSNR","typ":"VARCHAR(12)","nullbar":true,"gefuellt":3696,"verschieden":3659,"laenge_min":10,"laenge_max":10,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":3696,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"ANGELEGT","typ":"TIMESTAMP","nullbar":true,"gefuellt":4200,"verschieden":4158,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":{"2021":454,"2022":624,"2023":737,"2024":794,"2025":851,"2026":740},"codewerte":null},
+      {"name":"GEAENDERT","typ":"TIMESTAMP","nullbar":true,"gefuellt":2940,"verschieden":2911,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":{"2024":294,"2025":882,"2026":1764},"codewerte":null},
+      {"name":"GESPERRT","typ":"CHAR(1)","nullbar":true,"gefuellt":4200,"verschieden":2,"laenge_min":1,"laenge_max":1,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":4200,"geld":0},"jahre":null,"codewerte":[{"wert":"N","anzahl":4180},{"wert":"J","anzahl":20}]}
+    ]},
+    {"name":"PROTOKOLL","zeilen":150000,"stichprobe":null,"spalten":[
+      {"name":"PROT_ID","typ":"INTEGER","nullbar":false,"gefuellt":150000,"verschieden":150000,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"TABELLE","typ":"VARCHAR(31)","nullbar":true,"gefuellt":150000,"verschieden":15,"laenge_min":5,"laenge_max":12,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":150000,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"AKTION","typ":"CHAR(1)","nullbar":true,"gefuellt":150000,"verschieden":2,"laenge_min":1,"laenge_max":1,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":150000,"geld":0},"jahre":null,"codewerte":[{"wert":"S","anzahl":120000},{"wert":"L","anzahl":30000}]},
+      {"name":"ZEITPUNKT","typ":"TIMESTAMP","nullbar":true,"gefuellt":150000,"verschieden":142500,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":{"2021":16216,"2022":22297,"2023":26351,"2024":28378,"2025":30405,"2026":26353},"codewerte":null},
+      {"name":"INFO","typ":"BLOB SUB_TYPE TEXT","nullbar":true,"gefuellt":30000,"verschieden":null,"laenge_min":12,"laenge_max":900,"formen":null,"jahre":null,"codewerte":null}
+    ]},
+    {"name":"REZEPT","zeilen":9800,"stichprobe":null,"spalten":[
+      {"name":"REZEPT_ID","typ":"INTEGER","nullbar":false,"gefuellt":9800,"verschieden":9800,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"PATNR","typ":"CHAR(10)","nullbar":true,"gefuellt":9800,"verschieden":3430,"laenge_min":1,"laenge_max":4,"formen":{"ziffern":9800,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":9800,"linksbuendig":0,"buchstaben":0,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"AUSSTELLUNG","typ":"CHAR(8)","nullbar":true,"gefuellt":9702,"verschieden":1455,"laenge_min":8,"laenge_max":8,"formen":{"ziffern":9702,"datum_jjjjmmtt":0,"datum_ttmmjjjj":9702,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":0,"geld":0},"jahre":{"2021":1048,"2022":1442,"2023":1704,"2024":1835,"2025":1966,"2026":1707},"codewerte":null},
+      {"name":"ARZT_LANR","typ":"CHAR(9)","nullbar":true,"gefuellt":9310,"verschieden":466,"laenge_min":9,"laenge_max":9,"formen":{"ziffern":9310,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":0,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"HEILMITTEL","typ":"VARCHAR(10)","nullbar":true,"gefuellt":9702,"verschieden":29,"laenge_min":2,"laenge_max":6,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":9702,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"EINHEITEN","typ":"SMALLINT","nullbar":true,"gefuellt":9800,"verschieden":8,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"ERBRACHT","typ":"SMALLINT","nullbar":true,"gefuellt":9800,"verschieden":12,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"ZUZAHLUNG","typ":"VARCHAR(12)","nullbar":true,"gefuellt":7840,"verschieden":157,"laenge_min":10,"laenge_max":10,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":7840,"geld":7840},"jahre":null,"codewerte":null},
+      {"name":"BEFREIT","typ":"CHAR(1)","nullbar":true,"gefuellt":9800,"verschieden":2,"laenge_min":1,"laenge_max":1,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":9800,"geld":0},"jahre":null,"codewerte":[{"wert":"N","anzahl":8600},{"wert":"J","anzahl":1200}]},
+      {"name":"STATUS","typ":"CHAR(1)","nullbar":true,"gefuellt":9500,"verschieden":3,"laenge_min":1,"laenge_max":1,"formen":{"ziffern":3800,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":5700,"geld":0},"jahre":null,"codewerte":[{"wert":"A","anzahl":3900},{"wert":"1","anzahl":3800},{"wert":"E","anzahl":1800},{"wert":"","anzahl":300}]},
+      {"name":"OFFEN_EINHEITEN","typ":"BIGINT","nullbar":true,"gefuellt":9800,"verschieden":13,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null}
+    ]},
+    {"name":"TERMIN","zeilen":61000,"stichprobe":null,"spalten":[
+      {"name":"TERMIN_ID","typ":"INTEGER","nullbar":false,"gefuellt":61000,"verschieden":61000,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"MANDANT_NR","typ":"SMALLINT","nullbar":true,"gefuellt":61000,"verschieden":3,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"PATNR","typ":"CHAR(10)","nullbar":true,"gefuellt":59170,"verschieden":3550,"laenge_min":1,"laenge_max":4,"formen":{"ziffern":59170,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":59170,"linksbuendig":0,"buchstaben":0,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"TH_ID","typ":"INTEGER","nullbar":true,"gefuellt":61000,"verschieden":14,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"SPALTE","typ":"SMALLINT","nullbar":true,"gefuellt":61000,"verschieden":23,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"DATUM","typ":"DATE","nullbar":true,"gefuellt":61000,"verschieden":1830,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":{"2021":6594,"2022":9067,"2023":10716,"2024":11540,"2025":12364,"2026":10719},"codewerte":null},
+      {"name":"VON","typ":"TIME","nullbar":true,"gefuellt":61000,"verschieden":152,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"DAUER","typ":"SMALLINT","nullbar":true,"gefuellt":61000,"verschieden":6,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"STATUS","typ":"CHAR(1)","nullbar":true,"gefuellt":52500,"verschieden":3,"laenge_min":1,"laenge_max":1,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":52500,"geld":0},"jahre":null,"codewerte":[{"wert":"W","anzahl":44000},{"wert":"","anzahl":8500},{"wert":"A","anzahl":6100},{"wert":"F","anzahl":2400}]},
+      {"name":"REZEPT_ID","typ":"INTEGER","nullbar":true,"gefuellt":50630,"verschieden":8101,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"SERIE_ID","typ":"INTEGER","nullbar":true,"gefuellt":24400,"verschieden":4880,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"BEMERKUNG","typ":"VARCHAR(200)","nullbar":true,"gefuellt":7320,"verschieden":5124,"laenge_min":2,"laenge_max":140,"formen":{"ziffern":73,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":7100,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"AENDERUNG","typ":"TIMESTAMP","nullbar":true,"gefuellt":61000,"verschieden":60390,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":{"2021":6594,"2022":9067,"2023":10716,"2024":11540,"2025":12364,"2026":10719},"codewerte":null},
+      {"name":"ARBEITSPLATZ","typ":"VARCHAR(20)","nullbar":true,"gefuellt":61000,"verschieden":12,"laenge_min":4,"laenge_max":9,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":61000,"geld":0},"jahre":null,"codewerte":null}
+    ]},
+    {"name":"THERAPEUT","zeilen":14,"stichprobe":null,"spalten":[
+      {"name":"TH_ID","typ":"INTEGER","nullbar":false,"gefuellt":14,"verschieden":14,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"MANDANT_NR","typ":"SMALLINT","nullbar":false,"gefuellt":14,"verschieden":3,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"KUERZEL","typ":"VARCHAR(4)","nullbar":true,"gefuellt":14,"verschieden":14,"laenge_min":2,"laenge_max":3,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":14,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"NAME","typ":"VARCHAR(40)","nullbar":true,"gefuellt":14,"verschieden":14,"laenge_min":4,"laenge_max":14,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":14,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"VORNAME","typ":"VARCHAR(30)","nullbar":true,"gefuellt":14,"verschieden":13,"laenge_min":3,"laenge_max":9,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":14,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"FARBE","typ":"INTEGER","nullbar":true,"gefuellt":12,"verschieden":11,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"SPALTE","typ":"SMALLINT","nullbar":true,"gefuellt":14,"verschieden":14,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"AKTIV","typ":"CHAR(1)","nullbar":true,"gefuellt":14,"verschieden":2,"laenge_min":1,"laenge_max":1,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":14,"geld":0},"jahre":null,"codewerte":[{"wert":"J","anzahl":12},{"wert":"N","anzahl":2}]}
+    ]},
+    {"name":"VERTRAG","zeilen":380,"stichprobe":null,"spalten":[
+      {"name":"VERTRAG_ID","typ":"INTEGER","nullbar":false,"gefuellt":380,"verschieden":380,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"PATNR","typ":"CHAR(10)","nullbar":true,"gefuellt":380,"verschieden":361,"laenge_min":1,"laenge_max":4,"formen":{"ziffern":380,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":380,"linksbuendig":0,"buchstaben":0,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"MODUL","typ":"VARCHAR(20)","nullbar":true,"gefuellt":380,"verschieden":6,"laenge_min":5,"laenge_max":18,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":380,"geld":0},"jahre":null,"codewerte":null},
+      {"name":"BEGINN","typ":"DATE","nullbar":true,"gefuellt":380,"verschieden":190,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":{"2022":42,"2023":63,"2024":84,"2025":105,"2026":86},"codewerte":null},
+      {"name":"ENDE","typ":"DATE","nullbar":true,"gefuellt":114,"verschieden":68,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":{"2025":28,"2026":47,"2027":39},"codewerte":null},
+      {"name":"KUENDIGUNG","typ":"DATE","nullbar":true,"gefuellt":95,"verschieden":76,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":{"2025":31,"2026":64},"codewerte":null},
+      {"name":"BEITRAG","typ":"NUMERIC(9,2)","nullbar":true,"gefuellt":380,"verschieden":8,"laenge_min":null,"laenge_max":null,"formen":null,"jahre":null,"codewerte":null},
+      {"name":"STATUS","typ":"CHAR(1)","nullbar":true,"gefuellt":380,"verschieden":3,"laenge_min":1,"laenge_max":1,"formen":{"ziffern":0,"datum_jjjjmmtt":0,"datum_ttmmjjjj":0,"rechtsbuendig":0,"linksbuendig":0,"buchstaben":380,"geld":0},"jahre":null,"codewerte":[{"wert":"A","anzahl":270},{"wert":"G","anzahl":95},{"wert":"R","anzahl":15}]}
+    ]}
+  ],
+  "generatoren": [
+    {"name":"GEN_PATIENT","wert":4312},
+    {"name":"GEN_PROTOKOLL","wert":150233},
+    {"name":"GEN_REZEPT","wert":9907},
+    {"name":"GEN_TERMIN","wert":61877}
+  ],
+  "trigger": [
+    {"name":"PATIENT_BU","tabelle":"PATIENT","typ":"BEFORE UPDATE","aktiv":true},
+    {"name":"TERMIN_AIU","tabelle":"TERMIN","typ":"AFTER INSERT OR UPDATE","aktiv":true},
+    {"name":"TERMIN_BI","tabelle":"TERMIN","typ":"BEFORE INSERT","aktiv":true}
+  ],
+  "prozeduren": [
+    {"name":"NAECHSTE_PATNR"}
+  ]
+}
