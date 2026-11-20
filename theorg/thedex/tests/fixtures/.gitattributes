@@ -1,0 +1,4 @@
+# Testdateien sind Windows-1252/CP850 mit CRLF – Git darf sie nicht umwandeln.
+*.TDX binary
+*.INI binary
+*.bmp binary

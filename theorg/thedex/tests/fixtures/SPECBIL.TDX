@@ -1,0 +1,57 @@
+[Thedex]
+ThedexVersionNumber=2.1
+
+[Sender]
+SenderIdentification=THEORG
+SenderVerification=02A7
+SenderDescription=THEORG Praxis-Management
+SenderSoftwareVersionInformation=11.58
+SenderLanIdentification=THEORG
+
+[Message]
+MessageType=ClientInfo
+MessageCountryInformation=049
+MessageCodePageInformation=ANSI
+MessageDate=11092014
+MessageTime=10:00
+
+[Client]
+CSenderInternalIdentification=933
+CLastName=Mustermann
+CFirstName=Max
+CBirthday=01021970
+CSex=M
+UserDefined=6
+UserDefined1=Patient hat starke Schmerzen
+UserDefined2=Hautallergie
+UserDefined3=
+UserDefined4=
+UserDefined5=Sportler
+UserDefined6=
+
+[Cybex]
+PatientID=933 TH
+SSNO=1122334455
+Height=175
+Domhand=left
+Injurycode=sport
+Referphys=Dr. med. Klaus Hoppe
+Diagnosis=Kreuzbandruptur
+Insurance=AOK Stuttgart
+Text1=
+Text2=
+Text3=
+Num1=
+Num2=
+Num3=
+Notes=
+MI=
+BodyWeight=82
+ClinicanID=
+
+[mechaTronic]
+PatientID=933 TH
+Height=175
+Insurance=AOK Stuttgart
+BodyWeight=82
+ClinicanID=

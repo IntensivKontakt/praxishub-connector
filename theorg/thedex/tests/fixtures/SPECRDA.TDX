@@ -1,0 +1,30 @@
+[Thedex]
+ThedexVersionNumber=2.1
+
+[Sender]
+SenderIdentification=THEORG
+SenderVerification=02A7
+SenderDescription=THEORG Praxis-Management
+SenderSoftwareVersionInformation=11.58
+SenderLanIdentification=THEORG
+
+[Message]
+MessageType=ClientReport
+MessageCountryInformation=049
+MessageCodePageInformation=ANSI
+MessageDate=11092014
+MessageTime=16:10
+
+[Client]
+CSenderInternalIdentification=339
+CLastName=Mustermann
+CFirstName=Erika
+CBirthday=17031959
+
+[ReportData]
+ReportDate=11092014
+ReportTime=09:17
+ReportDescription=Trainingsbericht ErgoBike
+ReportTherapist=Heike
+ReportType=BMP
+ReportFile=REP00001.BMP
