@@ -1,0 +1,24 @@
+{
+  "kommentar": "Regeln fuer fuellen.py zum erfundenen Beispielschema. Nach der Kartierung je THEORG-Tabelle ergaenzen: verweise = Spalte X verweist auf Tabelle Y (in THEORG nicht deklariert), spalten = Bedeutung bzw. feste Werteverteilung, zeilen = feste Zeilenzahl, auslassen = Tabellen, die leer bleiben.",
+  "verweise": [
+    {"von": "PATIENT.MANDANT_NR", "nach": "MANDANT.MANDANT_NR"},
+    {"von": "THERAPEUT.MANDANT_NR", "nach": "MANDANT.MANDANT_NR"},
+    {"von": "TERMIN.MANDANT_NR", "nach": "MANDANT.MANDANT_NR"},
+    {"von": "TERMIN.PATNR", "nach": "PATIENT.PATNR"},
+    {"von": "TERMIN.REZEPT_ID", "nach": "REZEPT.REZEPT_ID"},
+    {"von": "REZEPT.PATNR", "nach": "PATIENT.PATNR"},
+    {"von": "VERTRAG.PATNR", "nach": "PATIENT.PATNR"},
+    {"von": "CHECKIN.PATNR", "nach": "PATIENT.PATNR"},
+    {"von": "OPOSTEN.PATNR", "nach": "PATIENT.PATNR"},
+    {"von": "DOKUMENT.PATNR", "nach": "PATIENT.PATNR"},
+    {"von": "ARBEITSPLATZ.AKT_PATNR", "nach": "PATIENT.PATNR"},
+    {"von": "KURS.TH_ID", "nach": "THERAPEUT.TH_ID"}
+  ],
+  "spalten": {
+    "TERMIN.DAUER": {"werte": {"20": 55, "30": 25, "45": 10, "60": 10}},
+    "ARBEITSZEIT.WOCHENTAG": {"werte": {"1": 20, "2": 20, "3": 20, "4": 20, "5": 15, "6": 5}},
+    "KONFIG.WERT": {"art": "text"}
+  },
+  "zeilen": {"MANDANT": 3},
+  "auslassen": []
+}

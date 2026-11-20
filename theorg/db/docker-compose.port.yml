@@ -1,0 +1,10 @@
+# Optional: Firebird nur auf 127.0.0.1 erreichbar machen (z. B. fuer fuellen.py --direkt
+# oder ein grafisches Werkzeug auf dem eigenen Rechner).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.port.yml up -d
+#   -> localhost/${FB_PORT:-3050}:/firebird/data/theorg.fdb
+
+services:
+  firebird:
+    ports:
+      - "127.0.0.1:${FB_PORT:-3050}:3050"
