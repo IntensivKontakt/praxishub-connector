@@ -1,7 +1,8 @@
 # Workspace-Wurzel. `core` = portabler, Tauri-freier Logik-Kern (lokal testbar);
 # `src-tauri` = die Desktop-App, die CI über `npm run tauri build` baut.
+# `theorg/thedex` = THEDEX-Dateischnittstelle für den THEORG-Connector (reine Bibliothek).
 [workspace]
-members = ["core", "src-tauri"]
+members = ["core", "src-tauri", "theorg/thedex"]
 resolver = "2"
 
 [workspace.package]

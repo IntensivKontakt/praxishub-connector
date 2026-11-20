@@ -1,0 +1,26 @@
+[Thedex]
+ThedexVersionNumber=2.1
+
+[Sender]
+SenderIdentification=THEORG
+SenderVerification=02A7
+SenderDescription=THEORG Praxis-Management
+SenderSoftwareVersionInformation=11.58
+SenderLanIdentification=THEORG
+
+[Message]
+MessageType=ClientNew
+MessageCountryInformation=049
+MessageCodePageInformation=OEM
+MessageDate=02032015
+MessageTime=11:05
+
+[Client]
+CSenderInternalIdentification=3003
+CLastName=MÅ·ig
+CFirstName=JÅrgen
+CBirthday=05061970
+CSex=M
+CStreet=Hauptstra·e 5
+CZip=50667
+CTown=Kîln

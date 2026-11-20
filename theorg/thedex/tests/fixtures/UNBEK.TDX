@@ -1,0 +1,27 @@
+; Kommentar vor dem ersten Abschnitt
+[THEDEX]
+thedexversionnumber = 2.1
+ThedexBuild=7
+
+[sender]
+senderidentification=theorg
+senderverification=02A7
+
+[MESSAGE]
+messagetype=clientinfo
+MessageDate=04032015
+MessageTime=7:05
+MessageExtra=x
+
+[client]
+csenderinternalidentification = 4004
+clastname = Leerfeld
+cfirstname=
+cbirthday=
+csex=
+ctelephone=  030 1234567
+CFoo=Bär
+UserDefined3=nur drei
+
+[THEORG]
+Zusatz=unbelegt

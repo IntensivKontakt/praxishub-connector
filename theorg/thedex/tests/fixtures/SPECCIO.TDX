@@ -1,0 +1,59 @@
+[Thedex]
+ThedexVersionNumber=2.1
+
+[Sender]
+SenderIdentification=THEORG
+SenderVerification=02A7
+SenderDescription=Theorg Praxis Management
+SenderSoftwareVersionInformation=11.42
+SenderLanIdentification=THEORG
+
+[Message]
+MessageType=ClientCheckInOut
+MessageCountryInformation=049
+MessageCodePageInformation=ANSI
+MessageDate=11092014
+MessageTime=20:48
+
+[Client]
+CSenderInternalIdentification=339
+CExternalIdentification=51-781451-78
+CTitle=Prof. Dr. med.
+CLastName=Mustermann
+CFirstName=Erika
+CBirthday=17031959
+CSex=W
+CHeight=178
+CWeight=76.4
+CStreet=Musterstrasse 17
+CZip=71636
+CTown=Ludwigsburg
+CCountryCode=D
+CCountry=Deutschland
+CTelephone=01234/12345
+CFax=01234/23456
+CCheckInID=200031969
+InsuranceID=108018347
+InsuranceClientID=1234567890
+InsuranceStatus=1
+InsuranceDebitnumber=88562347
+ClinicDepartment=REHA/1
+ClinicRoomNumber=205
+ClinicCaseNumber=478FH/201107108
+CustomerAccount=90156
+eMail=erika@mustermann.de
+CellularPhone=+491725556789
+CBankIdendificationCode=10010000
+CBankName=BBk Berlin
+CAccountNumber=10203040
+CAlternativeAccountHolder=Hans Mustermann
+CBIC=BSBNDEFF
+CIBAN=DE18100100000010203040
+
+[CheckInOutData]
+Event=OUT
+CheckInDate=11092014
+CheckInTime=17:17
+CheckOutDate=11092014
+CheckOutTime=20:48
+Description=Vertrag 36 Monate

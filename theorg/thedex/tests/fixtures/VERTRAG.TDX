@@ -1,0 +1,34 @@
+[Thedex]
+ThedexVersionNumber=2.1
+
+[Sender]
+SenderIdentification=THEORG
+SenderVerification=02A7
+SenderDescription=THEORG Praxis-Management
+SenderSoftwareVersionInformation=11.58
+SenderLanIdentification=THEORG
+
+[Message]
+MessageType=ClientInfo
+MessageCountryInformation=049
+MessageCodePageInformation=ANSI
+MessageDate=15012015
+MessageTime=08:30
+
+[Client]
+CSenderInternalIdentification=2001
+CLastName=Beispiel
+CFirstName=Jörg
+CBirthday=29021984
+CSex=M
+CCheckInID=CHIP-0815
+InsuranceID=PRIVAT
+InsuranceStatus=P
+
+[ContractData]
+BeginDate=01012014
+EndDate=31122015
+TerminationDate=30092015
+SuspendBeginDate=01072014
+SuspendEndDate=31072014
+Description=Gerätetraining 24 Monate

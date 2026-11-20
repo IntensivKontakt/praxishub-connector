@@ -1,0 +1,21 @@
+[Thedex]
+ThedexVersionNumber=2.1
+
+[Sender]
+SenderIdentification=THEORG
+SenderVerification=02A7
+SenderDescription=THEORG Praxis-Management
+SenderSoftwareVersionInformation=11.58
+SenderLanIdentification=THEORG
+
+[Message]
+MessageType=ClientDelete
+MessageCodePageInformation=ANSI
+MessageDate=03032015
+MessageTime=12:00
+
+[Client]
+CSenderInternalIdentification=1166
+CLastName=Mustermann
+CFirstName=Julia
+CBirthday=11011965

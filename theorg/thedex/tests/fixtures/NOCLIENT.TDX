@@ -1,0 +1,13 @@
+[Thedex]
+ThedexVersionNumber=2.1
+
+[Sender]
+SenderIdentification=THEORG
+SenderVerification=02A7
+SenderDescription=THEORG Praxis-Management
+SenderSoftwareVersionInformation=11.58
+SenderLanIdentification=THEORG
+
+[Message]
+MessageType=ClientInfo
+MessageDate=04032015
